@@ -1,0 +1,91 @@
+name: macOS Build & Release
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: version
+        name: Validate version and notes
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: python3 scripts/release-version.py >> "$GITHUB_OUTPUT"
+      - name: Build universal app and run tests
+        run: |
+          make -j3 ARCH_FLAGS="-arch arm64 -arch x86_64" all test
+          lipo -verify_arch arm64 x86_64 build/YaaTerm.app/Contents/MacOS/YaaTerm
+          codesign --verify --deep --strict build/YaaTerm.app
+      - name: Package app
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p build/release
+          ditto -c -k --sequesterRsrc --keepParent build/YaaTerm.app "build/release/YaaTerm-$VERSION-macOS.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YaaTerm-macOS
+          path: build/release/*.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.ref_name == github.event.repository.default_branch && github.event_name != 'pull_request' && needs.build.outputs.publish == 'true'
+    runs-on: macos-26
+    permissions:
+      contents: write
+    concurrency:
+      group: yaaterm-release
+      cancel-in-progress: false
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: YaaTerm-macOS
+          path: build/release
+      - name: Sign archive and update feed
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: make sign-release
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          tag="v$VERSION"
+          git fetch origin "refs/heads/$BRANCH" --tags
+          current=$(git show FETCH_HEAD:Info.plist | plutil -extract CFBundleShortVersionString raw -)
+          if [[ "$current" != "$VERSION" ]]; then
+            echo "A newer version is already on $BRANCH"
+            exit 0
+          fi
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            [[ "$(git rev-list -1 "$tag")" == "$GITHUB_SHA" ]] || { echo "Tag already belongs to another commit"; exit 1; }
+          fi
+          if draft=$(gh release view "$tag" --json isDraft --jq '.isDraft'); then
+            [[ "$draft" == true ]] || exit 0
+          else
+            gh release create "$tag" --draft --target "$GITHUB_SHA" --title "YaaTerm $VERSION" \
+              --notes-file "Resources/ReleaseNotes/$VERSION.txt"
+          fi
+          gh release upload "$tag" "build/release/YaaTerm-$VERSION-macOS.zip" build/release/appcast.xml --clobber
+          gh release edit "$tag" --draft=false --latest --target "$GITHUB_SHA"

@@ -78,3 +78,11 @@ make test
 验证分屏时，可以在同一标签页中按 ⌘ D，在两边分别运行 `echo $$` 和 `stty size`，再拖动分隔线重新查看尺寸。按 ⇧ ⌘ D 可在当前分屏内继续上下分割。
 
 这个版本实现了常用 VT 控制序列。历史内容按原行保存，改变列宽时没有软换行重排。目前支持常用鼠标滚轮报告。复杂 emoji 合字、其他鼠标事件和完整的 xterm 兼容性尚未实现。
+
+## 版本与更新
+
+「设置 → 关于」显示版本号和本版更新日志，可以打开 GitHub 仓库或提交反馈。默认每天自动检查，下载完成的更新会在退出时安装。两个开关均可在此调整，关闭自动检查后仍可点「立即检查」。
+
+首次构建会下载并校验 Sparkle 2.10.1。GitHub Actions 在推送和拉取请求时编译 Apple Silicon / Intel 通用应用并运行测试。发布新版时，递增 `Info.plist` 中的 `CFBundleShortVersionString` 与 `CFBundleVersion`，添加 `Resources/ReleaseNotes/<版本>.txt`，再合入默认分支。通过测试后，工作流会签名并发布安装包和更新清单。也可在默认分支手动运行工作流补发当前版本。
+
+发布签名使用仓库 Actions Secret `SPARKLE_PRIVATE_KEY`，对应公钥保存在 `Info.plist`。备份私钥，后续版本沿用同一密钥。首次安装包采用 ad-hoc 签名，尚未进行 Apple Developer ID 签名或公证。

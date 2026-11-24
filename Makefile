@@ -87,3 +87,7 @@ $(UPDATE_TEST): Tests/UpdateTest.mm Sources/AppUpdates.mm Sources/SettingsView.m
 	ln -sfn "$(abspath $(APP))/Contents/Resources" $(@D)/../Resources
 	ln -sfn "$(abspath $(APP))/Contents/Frameworks" $(@D)/../Frameworks
 	$(CXX) $(FLAGS) -F$(SPARKLE) -fobjc-arc -ISources $(filter %.mm,$^) -framework AppKit -framework UniformTypeIdentifiers -framework ImageIO -framework Security -o $@
+
+.PHONY: sign-release
+sign-release: $(SPARKLE)/.ready
+	node scripts/sign-release.mjs $(SPARKLE)/bin/sign_update build/release
