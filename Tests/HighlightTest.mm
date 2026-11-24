@@ -15,8 +15,32 @@ int main() {
         NSString *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
         NSFileManager *files = NSFileManager.defaultManager;
         assert([files createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil]);
+        // Provider fixtures use the same argv, hook file and PTY as an interactive launch.
+        NSString *fixture = @R"SH(#!/bin/sh
+tool=${0##*/}
+case "$tool" in
+    agy) printf '\033]7501;state=working\007\033]7501;state=done:app=antigravity\007' ;;
+    codex)
+        [ "$1" = -c ] && [ "$2" = 'tui.notifications=["agent-turn-complete"]' ] || exit 31
+        printf '\033]9;Turn complete\007' ;;
+    omp)
+        [ "$1" = --extension ] && [ -f "$2" ] || exit 32
+        printf '\033]777;yaaterm-turn;omp\007' ;;
+    *)
+        [ "$1" = --plugin-dir ] && [ "$YAATERM_NOTICE_AGENT" = "$tool" ] || exit 33
+        hook=$(/usr/bin/plutil -extract hooks.Stop.0.hooks.0.command raw "$2/hooks/hooks.json") || exit 34
+        /bin/sh -c "$hook" || exit 35 ;;
+esac
+printf '\033]2;waiting-%s\007' "$tool"
+read -r reply
+)SH";
+        for (NSString *tool in @[@"agy",@"codex",@"omp",@"claude",@"qodercn"]) {
+            NSString *path = [dir stringByAppendingPathComponent:tool];
+            assert([fixture writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+            assert([files setAttributes:@{NSFilePosixPermissions:@0700} ofItemAtPath:path error:nil]);
+        }
         NSDictionary *rc = @{@".zshenv":@"startup=e\n", @".zprofile":@"startup+=p\n",
-            @".zshrc":@"startup+=r\nPROMPT='yt> '\nRPROMPT=''\nHISTFILE=/dev/null\n",
+            @".zshrc":@"startup+=r\npath=(\"$ZDOTDIR\" $path)\nPROMPT='yt> '\nRPROMPT=''\nHISTFILE=/dev/null\n",
             @".zlogin":@"startup+=l\n"};
         for (NSString *name in rc)
             assert([rc[name] writeToFile:[dir stringByAppendingPathComponent:name] atomically:YES encoding:NSUTF8StringEncoding error:nil]);
@@ -63,6 +87,20 @@ int main() {
             assert(name=="sh" && status==7 && seconds>=0);
             ++terminations;
         };
+        int turns = 0;
+        for (NSString *tool in @[@"agy",@"codex",@"omp",@"claude",@"qodercn"]) {
+            screen.agentFinished = [&](std::string_view agent,bool failed) {
+                assert(agent==tool.UTF8String && !failed); ++turns;
+            };
+            int previous = turns;
+            send([tool stringByAppendingString:@"\r"]);
+            NSString *waiting = [NSString stringWithFormat:@"\033]2;waiting-%@\007",tool];
+            waitFor(^bool{ return contains(waiting); });
+            assert(turns==previous+1 && terminations==0);
+            send(@"next\r");
+            waitFor(^bool{ return screen.bracketPaste; });
+        }
+        screen.agentFinished = {};
         // The child emits turn notifications, suspends itself, then exits after fg.
         send(@"/bin/sh -c 'printf \"\\033]9;Done\\007\\033]777;notify;Agent;Done\\007\\033]2;starting-job\\007\"; kill -STOP $$; exit 7'\r");
         waitFor(^bool{ return contains(@"\033]2;starting-job\007") && screen.bracketPaste; });

@@ -35,15 +35,21 @@ _yaaterm_command_start() {
         words=(${(z)jobtexts[$ref]})
         name=${(Q)words[1]}
     fi
+    local agent=0
+    case ${name:t} in codex|claude|agy|qodercn|qoder-cn|qoderclicn|qodercli|omp) agent=1 ;; esac
     if [[ $name == */* ]]; then
         [[ -f $name && -x $name ]] || return 0
     else
-        (( command_only || (! $+builtins[$name] && ! $+functions[$name]) )) || return 0
+        (( agent || command_only || (! $+builtins[$name] && ! $+functions[$name]) )) || return 0
         (( $+commands[$name] )) || return 0
     fi
     name=${name:t}
     [[ -n $name && ${#name} -le 64 && $name != *[^a-zA-Z0-9_.+-]* ]] || return 0
     _yaaterm_job=$name _yaaterm_started=$SECONDS
+    if (( agent )); then
+        builtin printf '\033]777;yaaterm-agent;%s;%s\007' "$_yaaterm_exit_token" "$name" > "$TTY"
+        return 0
+    fi
     case $name in
         ls|docker|kubectl|df|ps|git|launchctl|pip|pip3|pip3.<->|python|python3|python3.<->) ;;
         *) return 0 ;;
@@ -145,11 +151,15 @@ _yaaterm_command_end() {
     [[ -n $name ]] || return 0
     # Ctrl-Z also returns to the prompt, with 128 + the stop signal, while the job is alive.
     if (( code > 128 )) && [[ ${jobstates[%+]-} == suspended:* ]]; then
-        case ${signals[code-127]-} in TSTP|STOP|TTIN|TTOU) return 0 ;; esac
+        case ${signals[code-127]-} in TSTP|STOP|TTIN|TTOU)
+            builtin printf '\033]777;yaaterm-agent;%s;\007' "$_yaaterm_exit_token" > "$TTY"
+            return 0 ;;
+        esac
     fi
     builtin printf '\033]777;yaaterm-exit;%s;%s;%d;%d\007' "$_yaaterm_exit_token" "$name" "$code" "$((SECONDS-_yaaterm_started))" > "$TTY"
     return 0
 }
+builtin source "${${(%):-%x}:A:h}/agents.zsh"
 typeset -ga preexec_functions precmd_functions
 preexec_functions+=(_yaaterm_command_start)
 precmd_functions=(_yaaterm_command_end "${precmd_functions[@]}")

@@ -176,6 +176,31 @@ int main() {
     for (char c : completed) events.feed(std::string_view(&c,1));
     assert(exits==1 && events.x()==0 && events.y()==0);
 
+    int turns = 0;
+    bool failed = false;
+    events.agentFinished = [&](std::string_view, bool error) { ++turns; failed = error; };
+    events.feed("\033]777;yaaterm-turn;omp\a\033]7501;state=done\a");
+    assert(turns==0);
+    events.feed("\033]777;yaaterm-agent;test-session;agy\a");
+    std::string probe;
+    events.reply = [&](std::string_view bytes) { probe = bytes; };
+    events.feed("\033]7501;?\a");
+    assert(probe.find("?:states=")!=probe.npos);
+    events.feed("\033]7501;state=working\a\033]7501;state=blocked:kind=permission\a");
+    assert(turns==0);
+    events.feed("\033]7501;state=done:app=antigravity\a\033]7501;state=done\033\\");
+    assert(turns==1 && !failed);
+    events.feed("\033]7501;state=working\a\033]7501;state=error\a");
+    assert(turns==2 && failed);
+    events.feed("\033]777;yaaterm-exit;test-session;agy;0;5\a");
+    assert(exits==1);
+    events.feed("\033]777;yaaterm-agent;test-session;codex\a\033]9;4;1;20\a\033]777;yaaterm-turn;claude\a");
+    assert(turns==2);
+    events.feed("\033]9;First turn\a\033]9;Second turn\033\\");
+    assert(turns==4 && !failed);
+    events.feed("\033]777;yaaterm-agent;test-session;\a\033]9;unrelated\a");
+    assert(turns==4);
+
     Screen stress(100,32);
     std::string line = "\033[32m" + std::string(80,'x') + "\033[0m\r\n";
     std::string block;

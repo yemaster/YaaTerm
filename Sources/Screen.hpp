@@ -50,7 +50,9 @@ public:
         if (!alternate && !main.link) writeTag = tag;
     }
     void resetPresentation() { context = writeTag = main.link = alt.link = 0; }
+    static bool isAgentCommand(std::string_view name);
     std::function<void(std::string_view,int,int)> commandExited;
+    std::function<void(std::string_view,bool)> agentFinished;
     explicit Screen(int w, int h) { resize(w, h); }
     void resize(int w, int h);
     void setHistoryLimit(size_t limit);
@@ -100,6 +102,9 @@ private:
     void put(char32_t ch);
     void byte(uint8_t c);
     void control(char c);
+    std::string agentCommand;
+    bool reportedTurn = false;
+    void finishAgentTurn(bool failed);
     void finishOSC();
     void mode(int n, bool enabled, bool priv);
 };

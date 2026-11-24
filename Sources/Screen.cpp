@@ -440,6 +440,16 @@ void Screen::control(char c) {
     current.cursor.y = std::clamp(current.cursor.y,current.cursor.origin ? current.top : 0,current.cursor.origin ? current.bottom : height-1);
 }
 
+bool Screen::isAgentCommand(std::string_view name) {
+    return name=="codex" || name=="claude" || name=="agy" || name=="omp" ||
+           name=="qodercn" || name=="qoder-cn" || name=="qoderclicn" || name=="qodercli";
+}
+
+void Screen::finishAgentTurn(bool failed) {
+    reportedTurn = true;
+    if (agentFinished) agentFinished(agentCommand,failed);
+}
+
 void Screen::finishOSC() {
     state = Text;
     if (truncated) return;
@@ -459,9 +469,34 @@ void Screen::finishOSC() {
         take(';'); // Optional OSC 8 parameters.
         active().link = hyperlink && !data.empty() ? hyperlink(data,alternate ? 0 : context) : 0;
         writeTag = active().link ? active().link : (alternate ? 0 : context);
+    } else if (code == "7501" && agentCommand=="agy") {
+        if (data=="?") {
+            if (reply) reply("\033]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth\033\\");
+            return;
+        }
+        std::string_view status;
+        while (!data.empty()) {
+            auto field = take(':');
+            if (field.substr(0,6)=="state=") status = field.substr(6);
+        }
+        if (status=="working") reportedTurn = false;
+        if ((status=="done" || status=="error") && !reportedTurn) finishAgentTurn(status=="error");
+    } else if (code == "9" && agentCommand=="codex" && !data.empty()) {
+        // Numeric subcommands include progress (OSC 9;4); these are not notifications.
+        auto prefix = data.substr(0,data.find(';'));
+        if (prefix.empty() || prefix.find_first_not_of("0123456789")!=prefix.npos) finishAgentTurn(false);
     } else if (code == "777" && !commandExitToken.empty()) {
         auto event = take(';');
+        if (event=="yaaterm-turn") {
+            if (!agentCommand.empty() && data==agentCommand && data!="agy" && data!="codex") finishAgentTurn(false);
+            return;
+        }
         if (take(';') != commandExitToken) return;
+        if (event=="yaaterm-agent") {
+            agentCommand = isAgentCommand(data) ? data : std::string_view{};
+            reportedTurn = false;
+            return;
+        }
         if (event == "yaaterm-context") {
             auto kind = take(';');
             if (!alternate && outputContext) {
@@ -470,7 +505,7 @@ void Screen::finishOSC() {
             }
             return;
         }
-        if (event != "yaaterm-exit" || !commandExited) return;
+        if (event != "yaaterm-exit") return;
         auto name = take(';'), codeField = take(';');
         if (name.empty() || name.size()>64 || codeField.empty() || data.empty()) return;
         for (char c : name) {
@@ -483,8 +518,11 @@ void Screen::finishOSC() {
             return result.ec == std::errc{} && result.ptr == end && value>=0;
         };
         int status, seconds;
-        if (integer(codeField,status) && status<=255 && integer(data,seconds))
-            commandExited(name,status,seconds);
+        if (integer(codeField,status) && status<=255 && integer(data,seconds)) {
+            bool duplicate = reportedTurn && name==agentCommand && status==0;
+            agentCommand.clear(); reportedTurn = false;
+            if (commandExited && !duplicate) commandExited(name,status,seconds);
+        }
     }
 }
 

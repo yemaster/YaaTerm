@@ -769,6 +769,7 @@ static void checkNoticeEvents() {
     TabWorkspace *work = [[TabWorkspace alloc] initWithFrame:NSMakeRect(0,0,640,400)];
     [work addTab]; TerminalView *pane = work.focused;
     [work splitVertical:YES];
+    pane.agentFinished(pane,@"codex",NO);
     pane.commandExited(pane,@"codex",0,12); // Same tab, different pane.
     assert(!TaskNotice.recent.count);
     [work addTab]; [work selectIndex:0]; // Back in the source before it exits.
@@ -797,6 +798,11 @@ static void checkNoticeEvents() {
     assert(work.subviews.firstObject==settings && settings.navigationButton==page);
     [TaskNotice.recent.firstObject open];
     assert(!work.showingSettings && work.focused==pane);
+    [work selectIndex:1];
+    pane.agentFinished(pane,@"qodercn",NO);
+    assert([TaskNotice.recent.firstObject.title isEqual:@"qodercn 任务完成"]);
+    [TaskNotice.recent.firstObject open];
+    assert(work.focused==pane);
     SetTerminalPreference(CommandNoticesKey,AllCommands);
     for (int i=0; i<40; ++i) [TaskNotice postFrom:pane window:nil title:@"任务" summary:[@(i) stringValue]];
     assert(TaskNotice.recent.count==32 && [TaskNotice.recent.lastObject.summary isEqual:@"8"]);

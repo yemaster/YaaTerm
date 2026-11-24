@@ -1,3 +1,4 @@
+#include "Screen.hpp"
 #import "TabWorkspace.h"
 #import "SettingsView.h"
 #import "TaskNotices.h"
@@ -216,14 +217,16 @@ static NSSize minPane(NSView *view) {
     [_tabBar setTitle:title atIndex:index];
     if (!self.showingSettings && _active == tab && ![self.window.title isEqualToString:title]) self.window.title = title;
 }
+- (BOOL)isAwayFromTab:(TerminalTab *)tab {
+    if (self.showingSettings || tab != _active) return YES;
+    NSWindow *front = NSApp.mainWindow;
+    return self.window && front != self.window && [(id)front.windowController conformsToProtocol:@protocol(WorkspaceWindow)];
+}
 - (void)finishedCommand:(NSString *)name status:(int)status seconds:(int)seconds inPane:(TerminalView *)pane tab:(TerminalTab *)tab {
-    if (!self.showingSettings && tab == _active) {
-        NSWindow *front = NSApp.mainWindow;
-        if (!self.window || front == self.window || ![(id)front.windowController conformsToProtocol:@protocol(WorkspaceWindow)]) return;
-    }
+    if (![self isAwayFromTab:tab]) return;
     NSInteger policy = [TerminalPreferences() integerForKey:CommandNoticesKey];
     if (policy != AllCommands) {
-        BOOL agent = [name isEqual:@"agy"] || [name isEqual:@"codex"] || [name isEqual:@"omp"] || [name isEqual:@"claude"];
+        BOOL agent = yaa::Screen::isAgentCommand(name.UTF8String);
         if (!agent && (policy==AgentOnly || seconds<10)) return;
     }
     NSString *title = [name stringByAppendingString:status ? @" 已结束" : @" 已完成"];
@@ -242,6 +245,12 @@ static NSSize minPane(NSView *view) {
     pane.didRename = ^(TerminalView *v) {
         TerminalTab *t = weakTab;
         if (t && t.focused == v) [t.owner showTitleFor:t];
+    };
+    pane.agentFinished = ^(TerminalView *v, NSString *name, BOOL failed) {
+        TerminalTab *t = weakTab;
+        if (![t.owner isAwayFromTab:t]) return;
+        NSString *title = [name stringByAppendingString:failed ? @" 任务失败" : @" 任务完成"];
+        [TaskNotice postFrom:v window:t.owner.window title:title summary:failed ? @"回到会话查看错误。" : @"本轮任务已结束，点击查看回复。"];
     };
     pane.commandExited = ^(TerminalView *v, NSString *name, int status, int seconds) {
         TerminalTab *t = weakTab;
