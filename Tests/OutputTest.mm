@@ -136,6 +136,16 @@ static void testTerminalOutput(NSString *directory) {
     assert(ls && ps && [ls.title isEqual:@"原始数据"] && [ps.title isEqual:@"原始数据"]);
     NSFont *terminalFont = [pane valueForKey:@"regular"];
     assert([terminalFont.familyName isEqual:@"JetBrains Mono"] && [ls.font isEqual:terminalFont]);
+    // A mouse-down followed by a mouse-up in the same cell never exposes raw data.
+    NSPoint location = [pane convertPoint:NSMakePoint(24,NSMaxY(ls.frame)+4) toView:nil];
+    auto event = [&](NSEventType type) {
+        return [NSEvent mouseEventWithType:type location:location modifierFlags:0 timestamp:0 windowNumber:0
+                                   context:nil eventNumber:1 clickCount:1 pressure:1];
+    };
+    [pane mouseDown:event(NSEventTypeLeftMouseDown)]; paint(pane,nil);
+    assert(buttons().count == 2 && [ls.title isEqual:@"原始数据"]);
+    [pane mouseUp:event(NSEventTypeLeftMouseUp)]; paint(pane,nil);
+    assert(buttons().count == 2 && [ls.title isEqual:@"原始数据"]);
     auto rawListing = [&] {
         NSMutableString *text = [NSMutableString string];
         for (int y=0;y<18;++y) {

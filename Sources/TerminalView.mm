@@ -622,7 +622,8 @@ struct PaintedLine {
     int first = std::max(0,(int)floor((NSMinY(dirty)-insetY)/_lh));
     int end = std::min(_screen->height,(int)ceil((NSMaxY(dirty)-insetY)/_lh));
     PaintedLine listingCache;
-    BOOL present = _tables && !_screen->alternate && _anchor < 0 && !_findBar.field.stringValue.length;
+    BOOL selecting = _anchor >= 0 && _extent != _anchor;
+    BOOL present = _tables && !_screen->alternate && !selecting && !_findBar.field.stringValue.length;
     for (int y = first; y < end; ++y) {
         BOOL header = NO, drawn = NO;
         const Row *source = &[self displayRow:y];
