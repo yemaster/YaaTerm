@@ -7,8 +7,16 @@
 
 @interface TerminalView (OutputTest)
 - (NSURL *)linkAtPoint:(NSPoint)p;
+- (void)consume:(std::string_view)bytes;
 - (void)toggleListing:(NSButton *)sender;
 - (const yaa::Row &)displayRow:(int)y;
+@end
+
+@interface HoverTestWindow : NSWindow
+@property NSPoint pointerLocation;
+@end
+@implementation HoverTestWindow
+- (NSPoint)mouseLocationOutsideOfEventStream { return self.pointerLocation; }
 @end
 
 static void until(BOOL (^predicate)(void), int line = __builtin_LINE()) {
@@ -117,6 +125,18 @@ static void testTerminalOutput(NSString *directory) {
     assert(history.archivedRows()>32 && history.lineAt(0)[0].tag==5 && sizeof(yaa::Cell)==16);
 
     TerminalView *pane = [[TerminalView alloc] initWithFrame:NSMakeRect(0,0,730,530)];
+    HoverTestWindow *window = [[HoverTestWindow alloc] initWithContentRect:pane.bounds
+        styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:YES];
+    [window.contentView addSubview:pane];
+    auto hover = [&](NSPoint point) {
+        window.pointerLocation = [pane convertPoint:point toView:nil];
+        NSEvent *event = [NSEvent mouseEventWithType:NSEventTypeMouseMoved location:window.pointerLocation
+            modifierFlags:NSEventModifierFlagCommand timestamp:0 windowNumber:window.windowNumber
+            context:nil eventNumber:1 clickCount:0 pressure:0];
+        [pane mouseMoved:event];
+    };
+    auto hand = [&] { return [[pane valueForKey:@"linkCursorVisible"] boolValue]; };
+    auto tracking = [&]() -> NSTrackingArea * { return [pane valueForKey:@"motionArea"]; };
     SetTerminalPreference(PrettyTables,YES); SetTerminalPreference(RevealFileLinks,YES); SetTerminalPreference(OpenWebLinks,YES);
     SetTerminalPreference(TerminalFontSize,14);
     [pane start];
@@ -162,6 +182,13 @@ static void testTerminalOutput(NSString *directory) {
         if ([[pane linkAtPoint:p].path isEqual:base.path]) { hit = p; break; }
     }
     assert(hit.x); // The shell has since changed to /.
+    assert(!tracking());
+    hover(NSMakePoint(NSWidth(pane.bounds)-100,hit.y));
+    [pane setLinkModifierDown:YES]; assert(!hand());
+    hover(hit); assert(hand() && NSCursor.currentCursor==NSCursor.pointingHandCursor);
+    [pane setLinkModifierDown:NO]; assert(!hand() && !tracking() && NSCursor.currentCursor!=NSCursor.pointingHandCursor);
+    [pane setLinkModifierDown:YES]; assert(hand()); // Pointer stayed on the file.
+    [pane setLinkModifierDown:NO];
     [pane toggleListing:ls]; paint(pane,@"raw.png");
     assert([ls.title isEqual:@"表格"] && [ps.title isEqual:@"原始数据"] && [raw isEqual:rawListing()]);
     int fileY = (int)((hit.y-12)/lh);
@@ -198,10 +225,25 @@ static void testTerminalOutput(NSString *directory) {
     until(^BOOL{ return [pane.sessionTitle isEqual:@"links"]; });
     assert([[[pane linkAtPoint:NSMakePoint(16+3*cw,12+lh*.5)] absoluteString] isEqual:@"https://example.org/plain"]);
     assert([[[pane linkAtPoint:NSMakePoint(16+2*cw,12+lh*1.5)] absoluteString] isEqual:@"https://example.org/target"]);
-    SetTerminalPreference(OpenWebLinks,NO); SetTerminalPreference(RevealFileLinks,NO);
+    NSPoint web = NSMakePoint(16+3*cw,12+lh*.5), label = NSMakePoint(16+2*cw,12+lh*1.5);
+    hover(web); assert(!hand());
+    [pane setLinkModifierDown:YES]; assert(hand());
+    hover(label); assert(hand());
+    hover(NSMakePoint(16+7*cw,label.y)); assert(!hand());
+    NSView *overlay = [[NSView alloc] initWithFrame:NSMakeRect(web.x-2,web.y-2,5,5)];
+    [pane addSubview:overlay]; hover(web); assert(!hand());
+    [overlay removeFromSuperview]; hover(web); assert(hand());
+    [pane consume:"\033[H\033[2Kplain"]; paint(pane,nil); assert(!hand());
+    [pane consume:"\033[?1003h"]; [pane setLinkModifierDown:NO];
+    assert(!hand() && (tracking().options & NSTrackingMouseMoved));
+    [pane consume:"\033[?1003l"]; assert(!tracking());
+    SetTerminalPreference(OpenWebLinks,NO);
+    [pane setLinkModifierDown:YES]; hover(label); assert(!hand());
+    SetTerminalPreference(RevealFileLinks,NO);
+    [pane setLinkModifierDown:YES]; hover(label); assert(!hand() && !tracking());
     assert(![pane linkAtPoint:NSMakePoint(16+2*cw,12+lh*1.5)]);
     [pane stop];
-    puts("Output: listing format fixtures, real ls/df/git through zsh, terminal typography and zoom, Docker fixture, per-block raw toggle, narrow reflow, historical cwd, plain/OSC 8 targets and disabled features OK");
+    puts("Output: listing formats, real ls/df/git, table toggles, reflow, historical cwd and Command-hover for file, plain and OSC 8 links OK");
 }
 
 int main() {

@@ -78,6 +78,8 @@ static NSString *cellText(const Row &row, int start, int end, bool trim) {
     CGFloat _fontSize, _cw, _lh, _listingActionWidth, _listingReturnWidth, _textOffsetY, _scrollRemainder;
     bool _ignoreWheelMomentum;
     NSTrackingArea *_motionArea;
+    BOOL _trackLinks, _linkCursorVisible;
+    NSRect _linkHitRect;
     unsigned _reportedButtons;
     char _lastMotion[48];
     size_t _lastMotionSize;
@@ -482,6 +484,8 @@ struct PaintedLine {
     [super viewDidMoveToWindow];
     if (self.window && _wakeOnActivity) [self wakeForActivity];
     if (_focusWindow || (_screen && _screen->focusReporting)) [self trackWindowFocus];
+    [self setLinkModifierDown:self.window.isKeyWindow && (NSEvent.modifierFlags & NSEventModifierFlagCommand)];
+    [self updatePointerTracking];
     if (_regular && self.window) { [self updateRowMetrics]; [self sizeTerminal]; self.needsDisplay = YES; }
     if (_findBar) {
         if (!self.window) { ++_findTicket; _findScan.reset(); }
@@ -494,7 +498,9 @@ struct PaintedLine {
 }
 - (void)preferenceChanged:(NSNotification *)note {
     if ([note.object isEqual:PrettyTables] || [note.object isEqual:OpenWebLinks] || [note.object isEqual:RevealFileLinks]) {
-        [self configureOutput]; self.needsDisplay = YES; return;
+        [self configureOutput];
+        [self setLinkModifierDown:self.window.isKeyWindow && (NSEvent.modifierFlags & NSEventModifierFlagCommand)];
+        self.needsDisplay = YES; return;
     }
     if ([note.object isEqual:BackgroundOpacity] || [note.object isEqual:BackgroundImageOpacity] || [note.object isEqual:BackgroundImagePath]) {
         BOOL enabled = UsesTerminalBackdrop();
@@ -562,12 +568,7 @@ struct PaintedLine {
     if (mouseMode != _screen->mouseTracking) {
         _lastMotionSize = 0;
         if (!_screen->mouseTracking) _reportedButtons = 0;
-        if (_motionArea) { [self removeTrackingArea:_motionArea]; _motionArea = nil; }
-        if (_screen->mouseTracking==1003) {
-            _motionArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect
-                options:NSTrackingMouseMoved|NSTrackingActiveInKeyWindow|NSTrackingInVisibleRect owner:self userInfo:nil];
-            [self addTrackingArea:_motionArea];
-        }
+        [self updatePointerTracking];
     }
     if (tracking != _screen->focusReporting) {
         _reportedFocus = !(self.window.isKeyWindow && self.window.firstResponder == self);
@@ -752,6 +753,13 @@ struct PaintedLine {
               NSUnderlineStyleAttributeName:@1}];
         else { [accent() setFill]; NSRectFill(NSMakeRect(x,y+2,2,_lh-4)); }
     }
+    if (_trackLinks) {
+        NSPoint p = [self convertPoint:self.window.mouseLocationOutsideOfEventStream fromView:nil];
+        if (NSPointInRect(p,dirty)) {
+            _linkHitRect = NSZeroRect;
+            [self updateLinkCursorAtPoint:p];
+        }
+    }
 }
 - (int)indexAt:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
@@ -759,6 +767,10 @@ struct PaintedLine {
            std::clamp((int)((p.x-insetX)/_cw),0,_screen->cols-1);
 }
 - (NSURL *)linkAtPoint:(NSPoint)p {
+    return [self linkAtPoint:p stableRect:nullptr];
+}
+- (NSURL *)linkAtPoint:(NSPoint)p stableRect:(NSRect *)stable {
+    if (stable) *stable = NSZeroRect;
     if ((!_webLinks && !_fileLinks) || !NSPointInRect(p,NSMakeRect(insetX,insetY,_cw*_screen->cols,_lh*_screen->height))) return nil;
     int y = int((p.y-insetY)/_lh), x = int((p.x-insetX)/_cw);
     TextPoint start = [self displayPoint:y], point = {start.row,start.column+x};
@@ -768,20 +780,29 @@ struct PaintedLine {
     OutputReference *rec = [_references record:tag];
     OutputReference *block = [_references record:leading];
     if ((leading & 3) == ExplicitLink) block = [_references record:block.parent];
-    auto line = ReadOutputLine(*_screen,point);
     BOOL files = block && (block.tag & 3) == FileListing;
-    BOOL pretty = _tables && block && (block.tag & 3) && !block.raw && !_screen->alternate && !_findBar.field.stringValue.length;
+    BOOL selecting = _anchor >= 0 && _extent != _anchor;
+    BOOL pretty = _tables && block && (block.tag & 3) && !block.raw && !_screen->alternate && !selecting && !_findBar.field.stringValue.length;
+    // Plain output has one hit target per grid cell. Table column edges can fall between cells.
+    if (stable && !pretty) *stable = NSMakeRect(insetX+x*_cw,insetY+y*_lh,_cw,_lh);
     if (!pretty && (tag & 3) == ExplicitLink && rec.url)
         return rec.url.fileURL ? (_fileLinks ? rec.url : nil) : (_webLinks ? rec.url : nil);
+    if (!pretty && x >= (int)row.size()) return nil;
+    auto line = ReadOutputLine(*_screen,point);
+    if (!pretty && line.index==NSNotFound) return nil;
     NSString *directory = rec.directory ?: block.directory;
     if (_fileLinks && !directory && !tag && !leading) directory = _session.workingDirectory;
     if (files || (_fileLinks && !pretty)) {
         NSArray *fields = ListingFields(ListingFormat::Files,line.text);
         NSString *name = fields.firstObject;
         if (name) {
-            BOOL nameHit = pretty ? start.row == line.first && start.column == 0 &&
-                       p.x-insetX < layoutListing(block.format,[self listingWidth],_cw).columns[0].width
-                       : line.index != NSNotFound && line.index >= line.text.length-name.length;
+            BOOL nameHit = line.index != NSNotFound && line.index >= line.text.length-name.length;
+            if (pretty) {
+                auto column = layoutListing(block.format,[self listingWidth],_cw).columns[0];
+                NSRect nameRect = NSMakeRect(column.x,insetY+y*_lh,column.width,_lh);
+                nameHit = start.row==line.first && start.column==0 && NSPointInRect(p,nameRect);
+                if (stable && nameHit) *stable = nameRect;
+            }
             if (nameHit && _fileLinks) {
                 if ([fields[3] hasPrefix:@"l"]) {
                     NSRange arrow = [name rangeOfString:@" -> "];
@@ -802,6 +823,7 @@ struct PaintedLine {
             for (int i=0;i<layout.count;++i) {
                 auto col = layout.columns[i];
                 if (col.band != band || p.x < col.x || p.x >= col.x+col.width) continue;
+                if (stable) *stable = NSMakeRect(col.x,insetY+y*_lh,col.width,_lh);
                 NSString *value = parsed.fields[i];
                 NSURL *url = TerminalURI(value,_webLinks,_fileLinks);
                 if (url) return url;
@@ -852,8 +874,62 @@ struct PaintedLine {
     if (size) [_session sendBytes:packet length:size];
     return YES;
 }
+- (void)updatePointerTracking {
+    NSTrackingAreaOptions options = 0;
+    if (self.window && (_trackLinks || (_screen && _screen->mouseTracking==1003))) {
+        options = NSTrackingMouseMoved | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect;
+        if (_trackLinks) options |= NSTrackingCursorUpdate | NSTrackingMouseEnteredAndExited;
+    }
+    if (_motionArea.options==options) return;
+    if (_motionArea) { [self removeTrackingArea:_motionArea]; _motionArea = nil; }
+    if (options) {
+        _motionArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect options:options owner:self userInfo:nil];
+        [self addTrackingArea:_motionArea];
+    }
+}
+- (void)setLinkCursorVisible:(BOOL)visible {
+    if (visible) {
+        if (NSCursor.currentCursor != NSCursor.pointingHandCursor) [NSCursor.pointingHandCursor set];
+    } else if (_linkCursorVisible && NSCursor.currentCursor==NSCursor.pointingHandCursor) [NSCursor.arrowCursor set];
+    _linkCursorVisible = visible;
+}
+- (void)setLinkModifierDown:(BOOL)down {
+    BOOL track = down && self.window && (_webLinks || _fileLinks);
+    if (track==_trackLinks) return;
+    _trackLinks = track;
+    _linkHitRect = NSZeroRect;
+    [self updatePointerTracking];
+    if (track) [self updateLinkCursorAtPoint:[self convertPoint:self.window.mouseLocationOutsideOfEventStream fromView:nil]];
+    else [self setLinkCursorVisible:NO];
+}
+- (void)updateLinkCursorAtPoint:(NSPoint)p {
+    NSView *content = self.window.contentView;
+    if (!NSPointInRect(p,self.visibleRect) || [content hitTest:[self convertPoint:p toView:content.superview]] != self) {
+        _linkHitRect = NSZeroRect; [self setLinkCursorVisible:NO]; return;
+    }
+    if (NSPointInRect(p,_linkHitRect)) {
+        if (_linkCursorVisible) [self setLinkCursorVisible:YES];
+        return;
+    }
+    [self setLinkCursorVisible:[self linkAtPoint:p stableRect:&_linkHitRect]!=nil];
+}
+- (void)cursorUpdate:(NSEvent *)event {
+    if (_trackLinks) {
+        [self updateLinkCursorAtPoint:[self convertPoint:event.locationInWindow fromView:nil]];
+        if (_linkCursorVisible) return;
+    }
+    [super cursorUpdate:event];
+}
+- (void)mouseExited:(NSEvent *)event {
+    if (event.trackingArea==_motionArea) {
+        // AppKit restores the cursor for the view being entered.
+        _linkHitRect = NSZeroRect; _linkCursorVisible = NO;
+    }
+    [super mouseExited:event];
+}
 - (void)mouseMoved:(NSEvent *)event {
     if (![self reportPointer:event button:3 action:MouseAction::Motion]) [super mouseMoved:event];
+    if (_trackLinks) [self updateLinkCursorAtPoint:[self convertPoint:event.locationInWindow fromView:nil]];
 }
 - (void)rightMouseDown:(NSEvent *)event {
     if (![self reportPointer:event button:2 action:MouseAction::Press]) [super rightMouseDown:event];

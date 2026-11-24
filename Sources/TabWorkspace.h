@@ -34,6 +34,7 @@
 - (BOOL)transferTab:(TerminalTab *)tab to:(TabWorkspace *)destination atSlot:(NSInteger)slot;
 @property (readonly) BOOL showingSettings;
 @property (copy) void (^onSettingsVisibilityChange)(void);
+- (void)setLinkModifierDown:(BOOL)down;
 - (void)showSettings;
 - (void)dismissSettings;
 - (void)addTab;

@@ -15,6 +15,7 @@
 - (void)wakeFromIdle;
 - (void)start;
 - (void)stop;
+- (void)setLinkModifierDown:(BOOL)down;
 - (void)adjustFont:(CGFloat)delta;
 - (void)showFind:(id)sender;
 - (void)findNext:(id)sender;

@@ -29,12 +29,33 @@ static NSView *backgroundMaterialView(TerminalBackgroundMaterial material, NSRec
 - (void)updateBackdrop;
 @end
 
+// Modifier changes belong to the window: the pointer may be over an unfocused split.
+@interface TerminalWindow : NSWindow
+@property (weak) TabWorkspace *workspace;
+@end
+@implementation TerminalWindow
+- (void)sendEvent:(NSEvent *)event {
+    if (event.type==NSEventTypeFlagsChanged && self.isKeyWindow)
+        [_workspace setLinkModifierDown:(event.modifierFlags & NSEventModifierFlagCommand)!=0];
+    [super sendEvent:event];
+}
+- (void)becomeKeyWindow {
+    [super becomeKeyWindow];
+    [_workspace setLinkModifierDown:(NSEvent.modifierFlags & NSEventModifierFlagCommand)!=0];
+}
+- (void)resignKeyWindow {
+    [_workspace setLinkModifierDown:NO];
+    [super resignKeyWindow];
+}
+@end
+
 NSWindow *CreateTerminalWindow(TabWorkspace *workspace) {
     NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                               NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
     NSRect frame = [NSWindow frameRectForContentRect:workspace.bounds styleMask:style];
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:frame styleMask:style | NSWindowStyleMaskFullSizeContentView
+    TerminalWindow *window = [[TerminalWindow alloc] initWithContentRect:frame styleMask:style | NSWindowStyleMaskFullSizeContentView
         backing:NSBackingStoreBuffered defer:YES];
+    window.workspace = workspace;
     window.titleVisibility = NSWindowTitleHidden;
     window.titlebarAppearsTransparent = YES;
     window.toolbarStyle = NSWindowToolbarStyleUnifiedCompact;

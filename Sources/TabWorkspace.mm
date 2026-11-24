@@ -61,6 +61,7 @@ static NSSize minPane(NSView *view) {
     TabBar *_tabBar;
     NSTimer *_sleepTimer;
     BOOL _sleepEnabled;
+    BOOL _linkModifierDown;
     NSUInteger _nextGroup;
 }
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -77,6 +78,12 @@ static NSSize minPane(NSView *view) {
     NSMutableArray *panes = [NSMutableArray array];
     [self collect:tab.root into:panes];
     return panes;
+}
+- (void)setLinkModifierDown:(BOOL)down {
+    if (down == _linkModifierDown) return;
+    _linkModifierDown = down;
+    if (self.showingSettings || !_active) return;
+    for (TerminalView *pane in [self panesInTab:_active]) [pane setLinkModifierDown:down];
 }
 - (void)monitorTab:(TerminalTab *)tab hidden:(BOOL)hidden {
     if (!tab) return;
