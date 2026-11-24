@@ -219,6 +219,9 @@ static void testTerminalOutput(NSString *directory) {
     [pane adjustFont:3]; paint(pane,nil);
     NSButton *remote = buttons().allValues.firstObject;
     assert([remote.font isEqual:[pane valueForKey:@"regular"]] && remote.font.pointSize==17);
+    SetTerminalPreference(TerminalFontWeight,500); paint(pane,nil);
+    assert([remote.font isEqual:PreferredTerminalFont(17,NO)]);
+    SetTerminalPreference(TerminalFontWeight,0);
     SetTerminalFontFamily(@"Menlo"); paint(pane,nil);
     remote = buttons().allValues.firstObject;
     assert([remote.font.familyName isEqual:@"Menlo"] && [remote.font isEqual:[pane valueForKey:@"regular"]]);

@@ -53,7 +53,7 @@ NSString *SettingsSectionTitle(NSInteger section) { return @[@"通用",@"外观"
 
 // The form and the search results share the same names and destinations.
 enum SettingID : NSInteger {
-    EndedSession, History, TabMotion, CommandAlerts, Mode, FontFamily, FontSize, LightTheme, DarkTheme, Material,
+    EndedSession, History, TabMotion, CommandAlerts, Mode, FontFamily, FontWeight, FontSize, LightTheme, DarkTheme, Material,
     BackOpacity, WallpaperFile, ImageOpacity, APIFormat, APIEndpoint, APIKey, APIModel, APIActions, IdleSleep, Tables, WebLinks, FileLinks,
     AppVersion, AutoCheck, AutoInstall, CheckNow, Repository, Feedback, ReleaseNotes, SettingCount
 };
@@ -66,6 +66,7 @@ static const SettingInfo &setting(SettingID index) {
         {GeneralSection,CommandNoticesKey,@"普通命令完成时",@"提醒",@"只提醒后台标签。此项不影响 Agent 提醒。"},
         {AppearanceSection,AppearanceModeKey,@"外观模式",@"主题",nil},
         {AppearanceSection,TerminalFontFamily,@"终端字体",@"主题",nil},
+        {AppearanceSection,TerminalFontWeight,@"字体粗细",@"主题",nil},
         {AppearanceSection,TerminalFontSize,@"终端字号",@"主题",nil},
         {AppearanceSection,LightSchemeKey,@"浅色配色",@"主题",nil},
         {AppearanceSection,DarkSchemeKey,@"深色配色",@"主题",nil},
@@ -652,6 +653,13 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
         [_mode setToolTip:@"跟随 macOS 的外观" forSegment:FollowSystem];
         _fontFamily = [FontFamilyPicker new];
         [self addField:_fontFamily setting:FontFamily];
+        NSPopUpButton *weight = [self picker:FontWeight];
+        [weight addItemWithTitle:@"默认"];
+        for (NSInteger value=100; value<=900; value+=100) {
+            [weight addItemWithTitle:@(value).stringValue]; weight.lastItem.tag = value;
+        }
+        [weight selectItemWithTag:PreferredFontWeight()];
+        weight.toolTip = @"400 为常规，500 为中等。可用字重取决于字体。";
         NSPopUpButton *font = [self picker:FontSize];
         for (NSInteger pt=9; pt<=28; ++pt) {
             [font addItemWithTitle:[NSString stringWithFormat:@"%ld pt",(long)pt]]; font.lastItem.tag = pt;
@@ -817,7 +825,7 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     if ([key isEqual:BackgroundOpacity]) { [_opacity refresh]; return; }
     if ([key isEqual:BackgroundImageOpacity]) { [_imageOpacity refresh]; return; }
     if ([key isEqual:TerminalFontFamily]) { [_fontFamily syncSelection]; [_light updateFont]; [_dark updateFont]; return; }
-    if ([key isEqual:TerminalFontSize]) { [_light updateFont]; [_dark updateFont]; }
+    if ([key isEqual:TerminalFontSize] || [key isEqual:TerminalFontWeight]) { [_light updateFont]; [_dark updateFont]; }
     for (NSView *field in _fields) {
         if (![key isEqual:field.identifier]) continue;
         NSInteger value = [TerminalPreferences() integerForKey:key];

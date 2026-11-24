@@ -520,7 +520,7 @@ struct PaintedLine {
     }
     if ([note.object isEqual:TerminalColorScheme]) { [_findBar applyPalette]; self.needsDisplay = YES; }
     if ([note.object isEqual:TerminalFontSize]) [self adjustFont:0];
-    if ([note.object isEqual:TerminalFontFamily]) [self applyFontChange];
+    if ([note.object isEqual:TerminalFontFamily] || [note.object isEqual:TerminalFontWeight]) [self applyFontChange];
     if ([note.object isEqual:ScrollbackLines]) {
         if (_wakeOnActivity) [self wakeForActivity];
         _screen->setHistoryLimit(PreferredScrollbackLines());

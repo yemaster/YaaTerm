@@ -3,6 +3,7 @@
 extern NSString *const CloseEndedSessions;
 extern NSString *const ScrollbackLines;
 extern NSString *const TerminalFontSize;
+extern NSString *const TerminalFontWeight;
 extern NSString *const TerminalFontFamily;
 extern NSString *const BundledFontFamily;
 extern NSString *const SystemMonospaceFamily;
@@ -38,6 +39,7 @@ extern NSNotificationName const TerminalPreferenceChanged;
 
 NSUserDefaults *TerminalPreferences(void);
 NSInteger PreferredFontSize(void);
+NSInteger PreferredFontWeight(void);
 NSString *PreferredFontFamily(void);
 NSFont *PreferredTerminalFont(CGFloat size, BOOL bold);
 void SetTerminalFontFamily(NSString *family);

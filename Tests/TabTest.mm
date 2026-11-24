@@ -197,8 +197,8 @@ static void checkSettings() {
             NSArray<NSTextField *> *labels = [view valueForKey:@"labels"];
             assert(NSMinX(theme.frame)==NSMinX(heading.frame) && NSMinX(background.frame)==NSMinX(heading.frame));
             assert(NSMaxY(heading.frame)<NSMinY(theme.frame) && NSMaxY(theme.frame)<NSMinY(labels[0].frame));
-            assert(NSMaxY(dark.frame)<NSMinY(background.frame) && NSMaxY(background.frame)<NSMinY(labels[5].frame));
-            assert([labels[5].stringValue isEqual:@"背景材质"]);
+            assert(NSMaxY(dark.frame)<NSMinY(background.frame) && NSMaxY(background.frame)<NSMinY(labels[6].frame));
+            assert([labels[6].stringValue isEqual:@"背景材质"]);
             assert(NSContainsRect(page.bounds,controlForKey(page,BackgroundImageOpacity).frame));
         };
         checkGroups();
@@ -230,7 +230,7 @@ static void checkSettings() {
         assert(NSMaxX(mode.frame) == NSMaxX(fontRow.frame) && NSMaxX(mode.frame) == NSMaxX(dark.frame));
         NSTextField *heading = [view valueForKey:@"heading"];
         NSArray<NSTextField *> *labels = [view valueForKey:@"labels"];
-        assert(labels.count == 9 && [labels.firstObject.stringValue isEqual:@"外观模式"]);
+        assert(labels.count == 10 && [labels.firstObject.stringValue isEqual:@"外观模式"]);
         assert(NSMaxY(heading.frame) < NSMinY(labels.firstObject.frame));
         assert(NSMinX(labels.firstObject.frame) > NSMinX(heading.frame));
         for (NSTextField *label in labels) assert(NSMinX(label.frame) == NSMinX(labels.firstObject.frame));
@@ -309,6 +309,18 @@ static void checkSettings() {
         assert([[[w.focused valueForKey:@"regular"] familyName] isEqual:@"Menlo"]);
         [family selectItemAtIndex:[family indexOfItemWithRepresentedObject:SystemMonospaceFamily]]; applyControl(family);
         assert([[w.focused valueForKey:@"regular"] isEqual:[NSFont monospacedSystemFontOfSize:18 weight:NSFontWeightLight]]);
+        NSPopUpButton *weight = (NSPopUpButton *)controlForKey(page,TerminalFontWeight);
+        NSPopUpButton *otherWeight = (NSPopUpButton *)controlForKey([other valueForKey:@"page"],TerminalFontWeight);
+        assert(weight.numberOfItems==10 && weight.selectedTag==0);
+        [w.focused adjustFont:1];
+        for (int value : {400,500}) {
+            assert([weight selectItemWithTag:value]); applyControl(weight);
+            assert(PreferredFontWeight()==value && otherWeight.selectedTag==value);
+            assert([[w.focused valueForKey:@"regular"] isEqual:PreferredTerminalFont(19,NO)]);
+            assert([((NSButton *)light.subviews[0]).font isEqual:PreferredTerminalFont(18,NO)]);
+        }
+        [w addTab]; assert([[w.focused valueForKey:@"regular"] isEqual:PreferredTerminalFont(18,NO)]);
+        [weight selectItemWithTag:0]; applyControl(weight);
         [family selectItemAtIndex:[family indexOfItemWithRepresentedObject:BundledFontFamily]]; applyControl(family);
         [font selectItemWithTag:14]; applyControl(font);
         applyControl(general);

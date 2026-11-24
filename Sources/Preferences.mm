@@ -9,6 +9,7 @@ NSString *const AppearanceModeKey = @"AppearanceMode";
 NSString *const LightSchemeKey = @"LightColorScheme";
 NSString *const DarkSchemeKey = @"DarkColorScheme";
 NSString *const TerminalFontSize = @"TerminalFontSize";
+NSString *const TerminalFontWeight = @"TerminalFontWeight";
 NSString *const TerminalFontFamily = @"TerminalFontFamily";
 NSString *const BundledFontFamily = @"JetBrains Mono";
 NSString *const SystemMonospaceFamily = @"system-monospace";
@@ -71,6 +72,13 @@ NSString *PreferredBackgroundImagePath(void) {
 NSInteger PreferredFontSize(void) {
     return std::clamp([TerminalPreferences() integerForKey:TerminalFontSize],9L,28L);
 }
+static BOOL validFontWeight(NSInteger value) {
+    return value >= 0 && value <= 900 && value % 100 == 0;
+}
+NSInteger PreferredFontWeight(void) {
+    NSInteger value = [TerminalPreferences() integerForKey:TerminalFontWeight];
+    return validFontWeight(value) ? value : 0;
+}
 static NSFont *installedMonospaceFont(NSString *family, CGFloat size) {
     if (!family.length) return nil;
     NSDictionary *traits = @{NSFontSymbolicTrait:@(NSFontDescriptorTraitMonoSpace)};
@@ -83,7 +91,29 @@ NSString *PreferredFontFamily(void) {
     if ([family isEqual:BundledFontFamily] || [family isEqual:SystemMonospaceFamily]) return family;
     return installedMonospaceFont(family,14) ? family : BundledFontFamily;
 }
+static NSFont *fontAtWeight(NSString *family, CGFloat size, NSInteger weight) {
+    static const NSFontWeight nativeWeights[] = {NSFontWeightUltraLight,NSFontWeightThin,NSFontWeightLight,
+        NSFontWeightRegular,NSFontWeightMedium,NSFontWeightSemibold,NSFontWeightBold,NSFontWeightHeavy,NSFontWeightBlack};
+    NSFontWeight native = nativeWeights[weight/100-1];
+    // Variable fonts use the OpenType 'wght' axis. Static families match the native weight trait.
+    NSDictionary *axis = @{@(0x77676874):@(weight)};
+    NSFontDescriptor *descriptor;
+    BOOL system = [family isEqual:SystemMonospaceFamily];
+    if (system) {
+        NSFont *base = [NSFont monospacedSystemFontOfSize:size weight:native];
+        descriptor = [base.fontDescriptor fontDescriptorByAddingAttributes:@{NSFontVariationAttribute:axis}];
+    } else {
+        descriptor = [NSFontDescriptor fontDescriptorWithFontAttributes:@{
+            NSFontFamilyAttribute:family, NSFontVariationAttribute:axis,
+            NSFontTraitsAttribute:@{NSFontSymbolicTrait:@(NSFontDescriptorTraitMonoSpace),NSFontWeightTrait:@(native)}}];
+    }
+    NSFont *font = [NSFont fontWithDescriptor:descriptor size:size];
+    if (font.isFixedPitch && (system || [font.familyName isEqual:family])) return font;
+    return [NSFont monospacedSystemFontOfSize:size weight:native];
+}
 NSFont *PreferredTerminalFont(CGFloat size, BOOL bold) {
+    NSInteger weightPreference = PreferredFontWeight();
+    if (weightPreference) return fontAtWeight(PreferredFontFamily(),size,bold ? MIN(weightPreference+200,900L) : weightPreference);
     NSString *family = [TerminalPreferences() stringForKey:TerminalFontFamily];
     NSFontWeight weight = bold ? NSFontWeightMedium : NSFontWeightLight;
     if ([family isEqual:SystemMonospaceFamily]) return [NSFont monospacedSystemFontOfSize:size weight:weight];
@@ -140,6 +170,7 @@ void UpdateSystemAppearance(NSAppearance *appearance) {
     refreshScheme();
 }
 void SetTerminalPreference(NSString *key, NSInteger value) {
+    if ([key isEqual:TerminalFontWeight] && !validFontWeight(value)) return;
     if ([key isEqual:BackgroundMaterialKey] && (value < PlainBackground || value > LiquidGlassBackground)) return;
     if ([key isEqual:BackgroundOpacity] || [key isEqual:BackgroundImageOpacity])
         value = std::clamp(value,0L,100L);

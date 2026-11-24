@@ -156,6 +156,17 @@ int main() {
         [TerminalPreferences() setObject:@"YaaTerm Removed Font Fixture" forKey:TerminalFontFamily];
         assert([PreferredFontFamily() isEqual:BundledFontFamily] && [PreferredTerminalFont(14,NO).familyName isEqual:BundledFontFamily]);
         [TerminalPreferences() removeObjectForKey:TerminalFontFamily];
+        auto axisWeight = [](NSFont *font) {
+            assert([font.familyName isEqual:BundledFontFamily] && font.isFixedPitch);
+            NSDictionary *axes = CFBridgingRelease(CTFontCopyVariation((__bridge CTFontRef)font));
+            return [axes[@(0x77676874)] integerValue] ?: 400; // JetBrains Mono's default axis value.
+        };
+        for (NSInteger weight : {100,300,400,500,700,800,900}) {
+            SetTerminalPreference(TerminalFontWeight,weight);
+            assert(axisWeight(PreferredTerminalFont(14,NO))==MIN(weight,800L));
+            assert(axisWeight(PreferredTerminalFont(14,YES))==MIN(weight+200,800L));
+        }
+        SetTerminalPreference(TerminalFontWeight,0);
         SetTerminalPreference(AppearanceModeKey,AlwaysDark);
         SetTerminalPreference(DarkSchemeKey,CatppuccinMocha);
         renderTest(1); renderTest(2);
