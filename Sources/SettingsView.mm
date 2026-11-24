@@ -53,7 +53,7 @@ NSString *SettingsSectionTitle(NSInteger section) { return @[@"通用",@"外观"
 
 // The form and the search results share the same names and destinations.
 enum SettingID : NSInteger {
-    EndedSession, History, TabMotion, CommandAlerts, Mode, FontSize, LightTheme, DarkTheme, Material,
+    EndedSession, History, TabMotion, CommandAlerts, Mode, FontFamily, FontSize, LightTheme, DarkTheme, Material,
     BackOpacity, WallpaperFile, ImageOpacity, APIFormat, APIEndpoint, APIKey, APIModel, APIActions, IdleSleep, Tables, WebLinks, FileLinks,
     AppVersion, AutoCheck, AutoInstall, CheckNow, Repository, Feedback, ReleaseNotes, SettingCount
 };
@@ -65,6 +65,7 @@ static const SettingInfo &setting(SettingID index) {
         {GeneralSection,AnimateTabSelection,@"标签动画",@"标签页",@"开启「减少动态效果」时停用。"},
         {GeneralSection,CommandNoticesKey,@"普通命令完成时",@"提醒",@"只提醒后台标签。此项不影响 Agent 提醒。"},
         {AppearanceSection,AppearanceModeKey,@"外观模式",@"主题",nil},
+        {AppearanceSection,TerminalFontFamily,@"终端字体",@"主题",nil},
         {AppearanceSection,TerminalFontSize,@"终端字号",@"主题",nil},
         {AppearanceSection,LightSchemeKey,@"浅色配色",@"主题",nil},
         {AppearanceSection,DarkSchemeKey,@"深色配色",@"主题",nil},
@@ -101,6 +102,47 @@ static void selectSegment(NSSegmentedControl *control, NSArray<NSString *> *labe
     for (NSInteger i=0; i<control.segmentCount; ++i)
         [control setLabel:i == selected ? [@"✓ " stringByAppendingString:labels[i]] : labels[i] forSegment:i];
 }
+
+@interface FontFamilyPicker : NSPopUpButton
+- (void)syncSelection;
+@end
+@implementation FontFamilyPicker
+- (instancetype)init {
+    if ((self = [super initWithFrame:NSMakeRect(0,0,212,26) pullsDown:NO])) {
+        self.target = self; self.action = @selector(choose:);
+        [self syncSelection];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(loadFamilies:)
+            name:NSPopUpButtonWillPopUpNotification object:self];
+    }
+    return self;
+}
+- (void)addFamily:(NSString *)family {
+    NSString *title = [family isEqual:BundledFontFamily] ? @"JetBrains Mono（默认）" :
+                      [family isEqual:SystemMonospaceFamily] ? @"系统等宽字体" : family;
+    [self addItemWithTitle:title]; self.lastItem.representedObject = family;
+}
+- (void)syncSelection {
+    NSString *family = PreferredFontFamily();
+    NSInteger index = [self indexOfItemWithRepresentedObject:family];
+    if (index < 0) { [self addFamily:family]; index = self.numberOfItems-1; }
+    [self selectItemAtIndex:index]; self.toolTip = self.selectedItem.title;
+}
+- (void)loadFamilies:(NSNotification *)note {
+    NSDictionary *traits = @{NSFontSymbolicTrait:@(NSFontDescriptorTraitMonoSpace)};
+    NSFontDescriptor *query = [NSFontDescriptor fontDescriptorWithFontAttributes:@{NSFontTraitsAttribute:traits}];
+    NSMutableSet<NSString *> *families = [NSMutableSet set];
+    for (NSFontDescriptor *face in [query matchingFontDescriptorsWithMandatoryKeys:[NSSet setWithObject:NSFontTraitsAttribute]]) {
+        NSString *name = [face objectForKey:NSFontFamilyAttribute];
+        if (name.length && ![name hasPrefix:@"."] && ![name isEqual:BundledFontFamily]) [families addObject:name];
+    }
+    [self removeAllItems];
+    [self addFamily:BundledFontFamily]; [self addFamily:SystemMonospaceFamily];
+    if (families.count) [self.menu addItem:NSMenuItem.separatorItem];
+    for (NSString *family in [families.allObjects sortedArrayUsingSelector:@selector(localizedStandardCompare:)]) [self addFamily:family];
+    [self syncSelection];
+}
+- (void)choose:(id)sender { SetTerminalFontFamily(self.selectedItem.representedObject); }
+@end
 
 @interface SectionButton : ChoiceButton
 @end
@@ -222,8 +264,7 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
 }
 - (void)setFrameSize:(NSSize)size { [super setFrameSize:size]; self.needsLayout = YES; }
 - (void)updateFont {
-    CGFloat size = PreferredFontSize();
-    NSFont *font = [NSFont fontWithName:@"JetBrainsMono-Light" size:size] ?: [NSFont monospacedSystemFontOfSize:size weight:NSFontWeightLight];
+    NSFont *font = PreferredTerminalFont(PreferredFontSize(),NO);
     for (ThemeCard *card in self.subviews) { card.font = font; card.needsDisplay = YES; }
 }
 - (void)syncSelection {
@@ -445,6 +486,7 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     NSSearchField *_search;
     BOOL _showingResults;
     NSSegmentedControl *_mode, *_material;
+    FontFamilyPicker *_fontFamily;
     ThemeGallery *_light, *_dark;
     WallpaperPicker *_wallpaper;
     OpacityControl *_opacity, *_imageOpacity;
@@ -568,7 +610,7 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     for (NSView *view in _page.subviews.copy) [view removeFromSuperview];
     [_fields removeAllObjects]; [_labels removeAllObjects]; [_hints removeAllObjects]; [_groupHeadings removeAllObjects];
     _page.emptyMessage = nil; _lastGroup = nil;
-    _light = nil; _dark = nil; _mode = nil; _material = nil; _wallpaper = nil; _opacity = nil; _imageOpacity = nil;
+    _light = nil; _dark = nil; _mode = nil; _material = nil; _fontFamily = nil; _wallpaper = nil; _opacity = nil; _imageOpacity = nil;
 }
 - (void)addUpdateControls {
     SPUStandardUpdaterController *controller = AppUpdateController();
@@ -608,6 +650,8 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     if (section == AppearanceSection) {
         _mode = [self segmentsFor:Mode labels:@[@"系统",@"浅色",@"深色"] selected:[TerminalPreferences() integerForKey:AppearanceModeKey]];
         [_mode setToolTip:@"跟随 macOS 的外观" forSegment:FollowSystem];
+        _fontFamily = [FontFamilyPicker new];
+        [self addField:_fontFamily setting:FontFamily];
         NSPopUpButton *font = [self picker:FontSize];
         for (NSInteger pt=9; pt<=28; ++pt) {
             [font addItemWithTitle:[NSString stringWithFormat:@"%ld pt",(long)pt]]; font.lastItem.tag = pt;
@@ -772,6 +816,7 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     if ([key isEqual:BackgroundImagePath]) { [_wallpaper refresh]; [_imageOpacity refresh]; return; }
     if ([key isEqual:BackgroundOpacity]) { [_opacity refresh]; return; }
     if ([key isEqual:BackgroundImageOpacity]) { [_imageOpacity refresh]; return; }
+    if ([key isEqual:TerminalFontFamily]) { [_fontFamily syncSelection]; [_light updateFont]; [_dark updateFont]; return; }
     if ([key isEqual:TerminalFontSize]) { [_light updateFont]; [_dark updateFont]; }
     for (NSView *field in _fields) {
         if (![key isEqual:field.identifier]) continue;

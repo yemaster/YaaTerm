@@ -102,6 +102,7 @@ static NSString *cellText(const Row &row, int start, int end, bool trim) {
     NSString *_sessionTitle, *_marked;
     BOOL _reportedFocus;
     dispatch_block_t _wakeOnActivity;
+    BOOL _fontChangePending;
     __weak NSWindow *_focusWindow;
     NSRange _markedSelection;
 }
@@ -426,6 +427,7 @@ struct PaintedLine {
 - (void)wakeFromIdle {
     _wakeOnActivity = nil;
     _screen->thaw();
+    if (_fontChangePending) [self applyFontChange];
 }
 - (void)wakeForActivity {
     dispatch_block_t wake = _wakeOnActivity;
@@ -433,7 +435,7 @@ struct PaintedLine {
 }
 - (void)updateFont {
     _listingActionWidth = 0;
-    _regular = [NSFont fontWithName:@"JetBrainsMono-Light" size:_fontSize] ?: [NSFont monospacedSystemFontOfSize:_fontSize weight:NSFontWeightLight];
+    _regular = PreferredTerminalFont(_fontSize,NO);
     for (auto &face : _faceAttributes) for (auto &attrs : face) attrs = nil;
     _cw = [@"0" sizeWithAttributes:@{NSFontAttributeName:_regular}].width;
     [self updateRowMetrics];
@@ -441,9 +443,10 @@ struct PaintedLine {
 - (NSMutableDictionary *)attributesForFace:(int)face underlined:(BOOL)underlined {
     auto &attrs = _faceAttributes[face][underlined ? 1 : 0];
     if (!attrs) {
-        NSFont *font = _regular;
-        if (face & 1) font = [NSFont fontWithName:@"JetBrainsMono-Medium" size:_fontSize] ?: [NSFont monospacedSystemFontOfSize:_fontSize weight:NSFontWeightMedium];
+        NSFont *font = face & 1 ? PreferredTerminalFont(_fontSize,YES) : _regular;
         attrs = [@{NSFontAttributeName:font,NSLigatureAttributeName:@0} mutableCopy];
+        if ((face & 1) && [font isEqual:_regular])
+            attrs[NSStrokeWidthAttributeName] = @(-2); // Some monospace families have only one weight.
         if (face & 2) attrs[NSObliquenessAttributeName] = @0.18;
         if (underlined) attrs[NSUnderlineStyleAttributeName] = @1;
     }
@@ -494,6 +497,11 @@ struct PaintedLine {
 }
 - (void)adjustFont:(CGFloat)delta {
     _fontSize = delta ? std::clamp(_fontSize+delta,9.,28.) : PreferredFontSize();
+    [self applyFontChange];
+}
+- (void)applyFontChange {
+    _fontChangePending = _wakeOnActivity != nil;
+    if (_fontChangePending) return;
     [self updateFont]; [self sizeTerminal]; self.needsDisplay = YES;
 }
 - (void)preferenceChanged:(NSNotification *)note {
@@ -512,6 +520,7 @@ struct PaintedLine {
     }
     if ([note.object isEqual:TerminalColorScheme]) { [_findBar applyPalette]; self.needsDisplay = YES; }
     if ([note.object isEqual:TerminalFontSize]) [self adjustFont:0];
+    if ([note.object isEqual:TerminalFontFamily]) [self applyFontChange];
     if ([note.object isEqual:ScrollbackLines]) {
         if (_wakeOnActivity) [self wakeForActivity];
         _screen->setHistoryLimit(PreferredScrollbackLines());

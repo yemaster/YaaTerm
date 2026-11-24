@@ -219,6 +219,10 @@ static void testTerminalOutput(NSString *directory) {
     [pane adjustFont:3]; paint(pane,nil);
     NSButton *remote = buttons().allValues.firstObject;
     assert([remote.font isEqual:[pane valueForKey:@"regular"]] && remote.font.pointSize==17);
+    SetTerminalFontFamily(@"Menlo"); paint(pane,nil);
+    remote = buttons().allValues.firstObject;
+    assert([remote.font.familyName isEqual:@"Menlo"] && [remote.font isEqual:[pane valueForKey:@"regular"]]);
+    SetTerminalFontFamily(BundledFontFamily);
     [pane adjustFont:-3];
     SetTerminalPreference(PrettyTables,NO); assert(!buttons().count);
     send(@"printf '\\033[2J\\033[Hhttps://example.org/plain\\r\\n\\033]8;;https://example.org/target\\033\\\\label\\033]8;;\\033\\\\\\r\\n\\033]2;links\\007'\r");

@@ -153,6 +153,9 @@ int main() {
         // CLI tests have no app bundle; AppKit loads the same font via ATSApplicationFontsPath in YaaTerm.
         NSURL *url = [NSURL fileURLWithPath:@"Resources/Fonts/JetBrainsMono-Regular.ttf"];
         CTFontManagerRegisterFontsForURL((__bridge CFURLRef)url,kCTFontManagerScopeProcess,nullptr);
+        [TerminalPreferences() setObject:@"YaaTerm Removed Font Fixture" forKey:TerminalFontFamily];
+        assert([PreferredFontFamily() isEqual:BundledFontFamily] && [PreferredTerminalFont(14,NO).familyName isEqual:BundledFontFamily]);
+        [TerminalPreferences() removeObjectForKey:TerminalFontFamily];
         SetTerminalPreference(AppearanceModeKey,AlwaysDark);
         SetTerminalPreference(DarkSchemeKey,CatppuccinMocha);
         renderTest(1); renderTest(2);

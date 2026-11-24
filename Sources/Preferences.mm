@@ -9,6 +9,9 @@ NSString *const AppearanceModeKey = @"AppearanceMode";
 NSString *const LightSchemeKey = @"LightColorScheme";
 NSString *const DarkSchemeKey = @"DarkColorScheme";
 NSString *const TerminalFontSize = @"TerminalFontSize";
+NSString *const TerminalFontFamily = @"TerminalFontFamily";
+NSString *const BundledFontFamily = @"JetBrains Mono";
+NSString *const SystemMonospaceFamily = @"system-monospace";
 NSString *const BackgroundOpacity = @"BackgroundOpacity";
 NSString *const BackgroundMaterialKey = @"BackgroundMaterial";
 NSString *const BackgroundImageOpacity = @"BackgroundImageOpacity";
@@ -32,7 +35,8 @@ NSUserDefaults *TerminalPreferences(void) {
                                   DarkSchemeKey:@(CatppuccinMocha), BackgroundOpacity:@100, BackgroundImageOpacity:@25,
                                   BackgroundMaterialKey:@(PlainBackground),
                                   PrettyTables:@YES, OpenWebLinks:@YES, RevealFileLinks:@YES,
-                                  TerminalFontSize:@14, SleepIdleTabs:@NO, AnimateTabSelection:@YES, CommandNoticesKey:@(AllCommands)}];
+                                  TerminalFontSize:@14, TerminalFontFamily:BundledFontFamily,
+                                  SleepIdleTabs:@NO, AnimateTabSelection:@YES, CommandNoticesKey:@(AllCommands)}];
         return store;
     }();
     return defaults;
@@ -66,6 +70,38 @@ NSString *PreferredBackgroundImagePath(void) {
 }
 NSInteger PreferredFontSize(void) {
     return std::clamp([TerminalPreferences() integerForKey:TerminalFontSize],9L,28L);
+}
+static NSFont *installedMonospaceFont(NSString *family, CGFloat size) {
+    if (!family.length) return nil;
+    NSDictionary *traits = @{NSFontSymbolicTrait:@(NSFontDescriptorTraitMonoSpace)};
+    NSFontDescriptor *query = [NSFontDescriptor fontDescriptorWithFontAttributes:@{NSFontFamilyAttribute:family, NSFontTraitsAttribute:traits}];
+    NSFontDescriptor *match = [query matchingFontDescriptorWithMandatoryKeys:[NSSet setWithObjects:NSFontFamilyAttribute,NSFontTraitsAttribute,nil]];
+    return match ? [NSFont fontWithDescriptor:match size:size] : nil;
+}
+NSString *PreferredFontFamily(void) {
+    NSString *family = [TerminalPreferences() stringForKey:TerminalFontFamily];
+    if ([family isEqual:BundledFontFamily] || [family isEqual:SystemMonospaceFamily]) return family;
+    return installedMonospaceFont(family,14) ? family : BundledFontFamily;
+}
+NSFont *PreferredTerminalFont(CGFloat size, BOOL bold) {
+    NSString *family = [TerminalPreferences() stringForKey:TerminalFontFamily];
+    NSFontWeight weight = bold ? NSFontWeightMedium : NSFontWeightLight;
+    if ([family isEqual:SystemMonospaceFamily]) return [NSFont monospacedSystemFontOfSize:size weight:weight];
+    NSFont *font = [family isEqual:BundledFontFamily] ? nil : installedMonospaceFont(family,size);
+    if (!font) {
+        return [NSFont fontWithName:bold ? @"JetBrainsMono-Medium" : @"JetBrainsMono-Light" size:size]
+               ?: [NSFont monospacedSystemFontOfSize:size weight:weight];
+    }
+    if (!bold) return font;
+    NSFont *strong = [NSFontManager.sharedFontManager convertFont:font toHaveTrait:NSBoldFontMask];
+    return strong.isFixedPitch && [strong.familyName isEqual:family] ? strong : font;
+}
+void SetTerminalFontFamily(NSString *family) {
+    NSUserDefaults *defaults = TerminalPreferences();
+    if ([[defaults stringForKey:TerminalFontFamily] isEqual:family]) return;
+    if (![family isEqual:BundledFontFamily] && ![family isEqual:SystemMonospaceFamily] && !installedMonospaceFont(family,14)) return;
+    [defaults setObject:family forKey:TerminalFontFamily];
+    [NSNotificationCenter.defaultCenter postNotificationName:TerminalPreferenceChanged object:TerminalFontFamily];
 }
 BOOL TabAnimationsEnabled(void) {
     return [TerminalPreferences() boolForKey:AnimateTabSelection] && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;

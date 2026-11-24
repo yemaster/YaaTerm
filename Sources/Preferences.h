@@ -3,6 +3,9 @@
 extern NSString *const CloseEndedSessions;
 extern NSString *const ScrollbackLines;
 extern NSString *const TerminalFontSize;
+extern NSString *const TerminalFontFamily;
+extern NSString *const BundledFontFamily;
+extern NSString *const SystemMonospaceFamily;
 // TerminalColorScheme signals a change to the resolved palette.
 extern NSString *const TerminalColorScheme;
 extern NSString *const AppearanceModeKey;
@@ -35,5 +38,8 @@ extern NSNotificationName const TerminalPreferenceChanged;
 
 NSUserDefaults *TerminalPreferences(void);
 NSInteger PreferredFontSize(void);
+NSString *PreferredFontFamily(void);
+NSFont *PreferredTerminalFont(CGFloat size, BOOL bold);
+void SetTerminalFontFamily(NSString *family);
 NSUInteger PreferredScrollbackLines(void);
 void SetTerminalPreference(NSString *key, NSInteger value);
