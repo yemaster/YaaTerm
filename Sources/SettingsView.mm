@@ -48,12 +48,13 @@ static void drawSymbol(NSImage *image, NSRect box) {
 }
 @end
 
-NSString *SettingsSectionTitle(NSInteger section) { return @[@"通用",@"外观",@"终端",@"性能",@"AI 服务"][section]; }
+NSString *SettingsSectionTitle(NSInteger section) { return @[@"通用",@"外观",@"终端",@"性能",@"AI 服务",@"关于"][section]; }
 
 // The form and the search results share the same names and destinations.
 enum SettingID : NSInteger {
     EndedSession, History, TabMotion, CommandAlerts, Mode, FontSize, LightTheme, DarkTheme, Material,
-    BackOpacity, WallpaperFile, ImageOpacity, APIFormat, APIEndpoint, APIKey, APIModel, APIActions, IdleSleep, Tables, WebLinks, FileLinks, SettingCount
+    BackOpacity, WallpaperFile, ImageOpacity, APIFormat, APIEndpoint, APIKey, APIModel, APIActions, IdleSleep, Tables, WebLinks, FileLinks,
+    AppVersion, Repository, Feedback, ReleaseNotes, SettingCount
 };
 struct SettingInfo { SettingsSection section; NSString *key, *name, *group, *help; };
 static const SettingInfo &setting(SettingID index) {
@@ -78,7 +79,11 @@ static const SettingInfo &setting(SettingID index) {
         {PerformanceSection,SleepIdleTabs,@"休眠闲置标签页",@"标签页",@"后台闲置 15 分钟后休眠。有前台任务时保持唤醒。"},
         {TerminalSection,PrettyTables,@"列表显示为表格",@"命令输出",@"适用于文件、进程、容器等列表。"},
         {TerminalSection,OpenWebLinks,@"打开网页链接",@"⌘ 点按",@"用默认浏览器打开。"},
-        {TerminalSection,RevealFileLinks,@"显示文件位置",@"⌘ 点按",@"在 Finder 中定位文件。"}
+        {TerminalSection,RevealFileLinks,@"显示文件位置",@"⌘ 点按",@"在 Finder 中定位文件。"},
+        {AboutSection,@"AppVersion",@"当前版本",@"应用",nil},
+        {AboutSection,@"Repository",@"GitHub 仓库",@"项目",nil},
+        {AboutSection,@"Feedback",@"意见反馈",@"项目",nil},
+        {AboutSection,@"ReleaseNotes",@"更新日志",@"版本记录",nil}
     };
     return entries[index];
 }
@@ -561,6 +566,18 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     _page.emptyMessage = nil; _lastGroup = nil;
     _light = nil; _dark = nil; _mode = nil; _material = nil; _wallpaper = nil; _opacity = nil; _imageOpacity = nil;
 }
+- (void)addProjectButton:(SettingID)index title:(NSString *)title hint:(NSString *)hint {
+    NSButton *button = [NSButton buttonWithTitle:title target:self action:@selector(openProjectLink:)];
+    button.tag = index; [button sizeToFit];
+    const auto &info = setting(index);
+    [self addField:button label:info.name key:info.key group:info.group hint:hint];
+}
+- (void)openProjectLink:(NSButton *)sender {
+    NSURL *repo = [NSURL URLWithString:@"https://github.com/yemaster/YaaTerm"];
+    NSURL *url = sender.tag == Feedback ? [repo URLByAppendingPathComponent:@"issues/new"] :
+        sender.tag == ReleaseNotes ? [repo URLByAppendingPathComponent:@"releases"] : repo;
+    [NSWorkspace.sharedWorkspace openURL:url];
+}
 - (void)displaySection:(NSInteger)section {
     [self clearPage]; _selection = section; _showingResults = NO;
     for (SectionButton *button : _sections) button.chosen = button.tag == section;
@@ -602,7 +619,7 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
         [alerts addItemsWithTitles:@[@"全部提醒",@"运行满 10 秒",@"关闭提醒"]];
         for (NSInteger i=0; i<alerts.numberOfItems; ++i) [alerts itemAtIndex:i].tag = i;
         [alerts sizeToFit]; [alerts selectItemWithTag:[TerminalPreferences() integerForKey:CommandNoticesKey]];
-    } else {
+    } else if (section == APISection) {
         if (!_apiForm) {
             _apiForm = [[LLMSettingsForm alloc] initWithFrame:NSZeroRect];
             __weak SettingsView *owner = self;
@@ -613,6 +630,20 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
         [self addField:_apiForm.apiKey setting:APIKey];
         [self addField:_apiForm.model setting:APIModel];
         [self addField:_apiForm setting:APIActions];
+    } else if (section == AboutSection) {
+        NSBundle *bundle = NSBundle.mainBundle;
+        NSString *version = [bundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+        NSString *build = [bundle objectForInfoDictionaryKey:@"CFBundleVersion"];
+        NSString *name = [bundle objectForInfoDictionaryKey:@"CFBundleName"] ?: @"YaaTerm";
+        NSTextField *number = [NSTextField labelWithString:version && build ?
+            [NSString stringWithFormat:@"%@ (%@)",version,build] : @"—"];
+        number.alignment = NSTextAlignmentRight; [number sizeToFit];
+        [self addField:number label:name key:setting(AppVersion).key group:setting(AppVersion).group hint:nil];
+        [self addProjectButton:Repository title:@"yemaster/YaaTerm" hint:nil];
+        [self addProjectButton:Feedback title:@"提交反馈…" hint:nil];
+        NSURL *notesURL = version ? [bundle URLForResource:version withExtension:@"txt" subdirectory:@"ReleaseNotes"] : nil;
+        NSString *notes = notesURL ? [NSString stringWithContentsOfURL:notesURL encoding:NSUTF8StringEncoding error:NULL] : nil;
+        [self addProjectButton:ReleaseNotes title:@"全部版本" hint:[notes stringByTrimmingCharactersInSet:NSCharacterSet.newlineCharacterSet]];
     }
     [self finishPage];
 }
@@ -622,8 +653,9 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     [self clearPage]; _showingResults = YES;
     for (SectionButton *button : _sections) button.chosen = NO;
     _heading = [self addHeading:@"搜索结果" fontSize:23];
-    for (NSInteger i=0; i<APIActions; ++i) {
+    for (NSInteger i=0; i<SettingCount; ++i) {
         const auto &info = setting((SettingID)i);
+        if (!info.name.length) continue;
         NSString *section = SettingsSectionTitle(info.section);
         BOOL materialMatch = i == Material && [[materialNames() componentsJoinedByString:@" "] localizedCaseInsensitiveContainsString:query];
         if (!materialMatch && ![info.name localizedCaseInsensitiveContainsString:query] && ![info.group localizedCaseInsensitiveContainsString:query]
@@ -684,7 +716,7 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     for (NSTextField *group in _groupHeadings.objectEnumerator) group.textColor = colors.secondaryText;
     for (NSTextField *label in _labels) label.textColor = colors.text;
     for (SectionButton *button : _sections) {
-        button.image = symbol(@[@"slider.horizontal.3",@"sun.max",@"terminal",@"gauge.with.dots.needle.50percent",@"network"][button.tag],button.chosen ? colors.accent : colors.secondaryText);
+        button.image = symbol(@[@"slider.horizontal.3",@"sun.max",@"terminal",@"gauge.with.dots.needle.50percent",@"network",@"info.circle"][button.tag],button.chosen ? colors.accent : colors.secondaryText);
         button.needsDisplay = YES;
     }
     if (_mode) {

@@ -11,7 +11,7 @@ SHELL_RESOURCES := $(shell find Resources/Shell -type f)
 .PHONY: all run test
 all: $(BIN)
 
-$(BIN): $(SOURCES) $(wildcard Sources/*.h Sources/*.hpp) Makefile Info.plist Resources/YaaTerm.icns Resources/ThemeCredits.txt $(wildcard Resources/Fonts/*) $(SHELL_RESOURCES)
+$(BIN): $(SOURCES) $(wildcard Sources/*.h Sources/*.hpp) Makefile Info.plist Resources/YaaTerm.icns Resources/ThemeCredits.txt $(wildcard Resources/ReleaseNotes/*.txt) $(wildcard Resources/Fonts/*) $(SHELL_RESOURCES)
 	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
 	cp Info.plist $(APP)/Contents/
 	rsync -a --delete --exclude=.DS_Store Resources/ $(APP)/Contents/Resources/
