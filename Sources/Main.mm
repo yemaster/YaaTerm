@@ -1,3 +1,4 @@
+#import "AppUpdates.h"
 #import "WindowContent.h"
 #import "Preferences.h"
 #import "Palette.h"
@@ -82,7 +83,7 @@ static char systemAppearanceContext;
     NSWindow.allowsAutomaticWindowTabbing = NO;
     self.windows = [NSMutableSet set]; [self addWindow:nil]; [self installMenu];
     [NSApp activateIgnoringOtherApps:YES];
-    dispatch_async(dispatch_get_main_queue(), ^{ [self installDockIcon]; });
+    dispatch_async(dispatch_get_main_queue(), ^{ [self installDockIcon]; StartAutomaticUpdatesIfEnabled(); });
 }
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender { return YES; }
 - (void)showSettings:(id)sender { [self.current showSettings]; }

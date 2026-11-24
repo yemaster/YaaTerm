@@ -1,4 +1,5 @@
 #import "SettingsView.h"
+#import "AppUpdates.h"
 #import "Preferences.h"
 #import "Palette.h"
 #import "Wallpaper.h"
@@ -54,7 +55,7 @@ NSString *SettingsSectionTitle(NSInteger section) { return @[@"通用",@"外观"
 enum SettingID : NSInteger {
     EndedSession, History, TabMotion, CommandAlerts, Mode, FontSize, LightTheme, DarkTheme, Material,
     BackOpacity, WallpaperFile, ImageOpacity, APIFormat, APIEndpoint, APIKey, APIModel, APIActions, IdleSleep, Tables, WebLinks, FileLinks,
-    AppVersion, Repository, Feedback, ReleaseNotes, SettingCount
+    AppVersion, AutoCheck, AutoInstall, CheckNow, Repository, Feedback, ReleaseNotes, SettingCount
 };
 struct SettingInfo { SettingsSection section; NSString *key, *name, *group, *help; };
 static const SettingInfo &setting(SettingID index) {
@@ -81,6 +82,9 @@ static const SettingInfo &setting(SettingID index) {
         {TerminalSection,OpenWebLinks,@"打开网页链接",@"⌘ 点按",@"用默认浏览器打开。"},
         {TerminalSection,RevealFileLinks,@"显示文件位置",@"⌘ 点按",@"在 Finder 中定位文件。"},
         {AboutSection,@"AppVersion",@"当前版本",@"应用",nil},
+        {AboutSection,@"AutoCheck",@"自动检查更新",@"软件更新",@"每天检查一次。"},
+        {AboutSection,@"AutoInstall",@"自动安装更新",@"软件更新",@"后台下载，退出时安装。"},
+        {AboutSection,@"CheckNow",@"检查更新",@"软件更新",nil},
         {AboutSection,@"Repository",@"GitHub 仓库",@"项目",nil},
         {AboutSection,@"Feedback",@"意见反馈",@"项目",nil},
         {AboutSection,@"ReleaseNotes",@"更新日志",@"版本记录",nil}
@@ -566,6 +570,25 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     _page.emptyMessage = nil; _lastGroup = nil;
     _light = nil; _dark = nil; _mode = nil; _material = nil; _wallpaper = nil; _opacity = nil; _imageOpacity = nil;
 }
+- (void)addUpdateControls {
+    SPUStandardUpdaterController *controller = AppUpdateController();
+    SPUUpdater *updater = controller.updater;
+    for (SettingID index : {AutoCheck, AutoInstall}) {
+        NSSwitch *toggle = [NSSwitch new]; [toggle sizeToFit];
+        if (updater) {
+            NSString *key = index == AutoCheck ? @"automaticallyChecksForUpdates" : @"automaticallyDownloadsUpdates";
+            [toggle bind:NSValueBinding toObject:updater withKeyPath:key options:nil];
+            if (index == AutoInstall)
+                [toggle bind:NSEnabledBinding toObject:updater withKeyPath:@"allowsAutomaticUpdates" options:nil];
+        } else toggle.enabled = NO;
+        [self addField:toggle setting:index];
+    }
+    NSButton *check = [NSButton buttonWithTitle:@"立即检查…" target:controller action:@selector(checkForUpdates:)];
+    [check sizeToFit];
+    if (updater) [check bind:NSEnabledBinding toObject:updater withKeyPath:@"canCheckForUpdates" options:nil];
+    else check.enabled = NO;
+    [self addField:check setting:CheckNow];
+}
 - (void)addProjectButton:(SettingID)index title:(NSString *)title hint:(NSString *)hint {
     NSButton *button = [NSButton buttonWithTitle:title target:self action:@selector(openProjectLink:)];
     button.tag = index; [button sizeToFit];
@@ -639,6 +662,7 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
             [NSString stringWithFormat:@"%@ (%@)",version,build] : @"—"];
         number.alignment = NSTextAlignmentRight; [number sizeToFit];
         [self addField:number label:name key:setting(AppVersion).key group:setting(AppVersion).group hint:nil];
+        [self addUpdateControls];
         [self addProjectButton:Repository title:@"yemaster/YaaTerm" hint:nil];
         [self addProjectButton:Feedback title:@"提交反馈…" hint:nil];
         NSURL *notesURL = version ? [bundle URLForResource:version withExtension:@"txt" subdirectory:@"ReleaseNotes"] : nil;
