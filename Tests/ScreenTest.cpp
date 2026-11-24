@@ -87,6 +87,27 @@ int main() {
     assert(mouse.wheelReport(report,true,0,224,3,20,44)==7 && (unsigned char)report[4]==0xc4 && (unsigned char)report[5]==0x80);
     mouse.feed("\033[?1002;1007l"); assert(wheel(true).empty() && !mouse.alternateScroll);
     mouse.feed("\033[?1007h"); assert(mouse.alternateScroll);
+    mouse.feed("\033[?1002;1006h");
+    auto pointer = [&](int button,MouseAction action) {
+        size_t n = mouse.mouseReport(report,button,action,0,4,2,30,22);
+        return std::string(report,n);
+    };
+    assert(pointer(0,MouseAction::Press)=="\033[<0;4;2M" && pointer(0,MouseAction::Release)=="\033[<0;4;2m");
+    assert(pointer(2,MouseAction::Motion)=="\033[<34;4;2M" && pointer(3,MouseAction::Motion).empty());
+    mouse.feed("\033[?1003h"); assert(pointer(3,MouseAction::Motion)=="\033[<35;4;2M");
+    Screen vt(24,3);
+    vt.feed("\033)0\016lqk\017x"); assert(vt.row(0)[0].ch==U'┌' && vt.row(0)[1].ch==U'─' && vt.row(0)[3].ch=='x');
+    vt.feed("\033[1;38:2::1:2:3;48:5:42mC"); assert(vt.row(0)[4].style.fg==0x010203 && vt.row(0)[4].style.bg==(Indexed+42) && (vt.row(0)[4].style.flags & Bold));
+    vt.feed("\033[3g\033[5G\033H\033[12G\033H\r\t"); assert(vt.x()==4);
+    vt.feed("\033[I"); assert(vt.x()==11);
+    vt.feed("\033[Z\033[g\r\t"); assert(vt.x()==11);
+    vt.reply = [&](std::string_view data){response=data;};
+    vt.feed("\033[?2004h\033[?2004$p"); assert(response=="\033[?2004;1$y");
+    vt.feed("\033[?7777$p"); assert(response=="\033[?7777;0$y");
+    vt.feed("\033[>0c"); assert(response=="\033[>0;0;0c");
+    vt.feed(u8"\r👨‍👩‍👦\033[2b");
+    assert(vt.x()==6 && vt.row(0)[0].mark==vt.row(0)[4].mark && vt.row(0)[4].width==2);
+    vt.feed("\033]2;never\030X"); assert(vt.row(0)[6].ch=='X');
     Screen resized(12,6);
     resized.feed("\033[6;5H\033[?1049h");
     resized.resize(8,3);

@@ -296,7 +296,10 @@ void Screen::put(char32_t ch) {
         return;
     }
     graphicAdjacent = true;
-    width = width == 2 ? 2 : 1;
+    writeGlyph(ch,width == 2 ? 2 : 1,0);
+}
+void Screen::writeGlyph(char32_t ch, int width, uint32_t mark) {
+    auto &b = active();
     if (b.cursor.autoWrap && (b.cursor.wrapPending || b.cursor.x + width > cols)) {
         lineFeed(b.cursor.wrapPending ? cols : b.cursor.x); b.cursor.x = 0;
     }
@@ -310,7 +313,7 @@ void Screen::put(char32_t ch) {
     if (r[b.cursor.x].width != 1 || (b.cursor.x + width < cols && r[b.cursor.x + width].width == 0))
         erase(r, b.cursor.x, b.cursor.x + width);
     r.written = std::max(r.written,b.cursor.x+width);
-    r[b.cursor.x] = Cell{b.cursor.pen, ch, 0, (uint8_t)width, writeTag};
+    r[b.cursor.x] = Cell{b.cursor.pen, ch, mark, (uint8_t)width, writeTag};
     if (width == 2) r[b.cursor.x + 1] = Cell{b.cursor.pen, 0, 0, 0, writeTag};
     b.cursor.wrapPending = b.cursor.x + width >= cols;
     b.cursor.x = std::min(cols - 1, b.cursor.x + width);
@@ -318,11 +321,18 @@ void Screen::put(char32_t ch) {
 
 // Wheel presses have no release event. Coordinates from the view are one-based.
 size_t Screen::wheelReport(char (&out)[48], bool up, int modifiers, int col, int row, int pixelX, int pixelY) const {
-    if (!mouseTracking) return 0;
-    int button = (up ? 64 : 65) + (mouseTracking == 9 ? 0 : modifiers);
+    return mouseReport(out,up ? 64 : 65,MouseAction::Press,modifiers,col,row,pixelX,pixelY);
+}
+size_t Screen::mouseReport(char (&out)[48], int button, MouseAction action, int modifiers,
+                           int col, int row, int pixelX, int pixelY) const {
+    if (!mouseTracking || (mouseTracking==9 && action!=MouseAction::Press)) return 0;
+    if (action==MouseAction::Motion && (mouseTracking<1002 || (button==3 && mouseTracking!=1003))) return 0;
+    bool release = action==MouseAction::Release;
+    if (release && mouseEncoding!=MouseEncoding::Sgr && mouseEncoding!=MouseEncoding::SgrPixels) button=3;
+    button |= (mouseTracking==9 ? 0 : modifiers) | (action==MouseAction::Motion ? 32 : 0);
     switch (mouseEncoding) {
-        case MouseEncoding::SgrPixels: return snprintf(out,sizeof(out),"\033[<%d;%d;%dM",button,pixelX,pixelY);
-        case MouseEncoding::Sgr: return snprintf(out,sizeof(out),"\033[<%d;%d;%dM",button,col,row);
+        case MouseEncoding::SgrPixels: return snprintf(out,sizeof(out),"\033[<%d;%d;%d%c",button,pixelX,pixelY,release ? 'm' : 'M');
+        case MouseEncoding::Sgr: return snprintf(out,sizeof(out),"\033[<%d;%d;%d%c",button,col,row,release ? 'm' : 'M');
         case MouseEncoding::Urxvt: return snprintf(out,sizeof(out),"\033[%d;%d;%dM",button+32,col,row);
         default: break;
     }
@@ -377,13 +387,87 @@ void Screen::mode(int n, bool on, bool priv) {
     }
 }
 
+void Screen::moveTabs(int count, bool forward) {
+    auto &cursor = active().cursor;
+    int step = forward ? 1 : -1, edge = forward ? cols-1 : 0;
+    while (count-- && cursor.x != edge) {
+        do { cursor.x += step; } while (cursor.x != edge && !tabs[cursor.x]);
+    }
+    cursor.wrapPending = false;
+}
+int Screen::modeStatus(int n, bool priv) const {
+    if (!priv) return n==4 ? (insert ? 1 : 2) : 0;
+    bool enabled;
+    switch (n) {
+        case 1: enabled = applicationCursor; break;
+        case 6: enabled = active().cursor.origin; break;
+        case 7: enabled = active().cursor.autoWrap; break;
+        case 25: enabled = cursorVisible; break;
+        case 47: case 1047: case 1049: enabled = alternate; break;
+        case 9: case 1000: case 1002: case 1003: enabled = mouseTracking==n; break;
+        case 1004: enabled = focusReporting; break;
+        case 1005: case 1006: case 1015: case 1016: enabled = int(mouseEncoding)==n; break;
+        case 1007: enabled = alternateScroll; break;
+        case 2004: enabled = bracketPaste; break;
+        default: return 0;
+    }
+    return enabled ? 1 : 2;
+}
+// Normalize SGR subparameters without interpreting an unknown color space as a separate attribute.
+static int extendedSGR(std::string_view sequence,std::array<int,32> &args) {
+    int count = 0;
+    bool more = true;
+    while (more && count<32) {
+        auto end = sequence.find(';');
+        more = end!=sequence.npos;
+        auto field = sequence.substr(0,end);
+        sequence = end==sequence.npos ? std::string_view{} : sequence.substr(end+1);
+        int values[6]{}, size = 0;
+        for (;;) {
+            auto i = field.find(':');
+            auto atom = field.substr(0,i);
+            if (size==6) { size=0; break; }
+            if (!atom.empty()) {
+                auto parsed = std::from_chars(atom.data(),atom.data()+atom.size(),values[size]);
+                if (parsed.ec!=std::errc{} || parsed.ptr!=atom.data()+atom.size() || values[size]<0) { size=0; break; }
+            }
+            ++size;
+            if (i==field.npos) break;
+            field.remove_prefix(i+1);
+        }
+        if (size==1) args[count++] = values[0];
+        else if (size==2 && values[0]==4) args[count++] = values[1] ? 4 : 24;
+        else if (size>=3 && (values[0]==38 || values[0]==48)) {
+            bool indexed = values[1]==5 && size==3;
+            bool rgb = values[1]==2 && (size==5 || (size==6 && !values[2]));
+            if ((!indexed && !rgb) || count+(indexed?3:5)>32) continue;
+            args[count++] = values[0]; args[count++] = values[1];
+            for (int i=size-(indexed?1:3); i<size; ++i) args[count++] = values[i];
+        }
+    }
+    return count;
+}
 void Screen::control(char c) {
     bool priv = !sequence.empty() && sequence[0] == '?';
+    if (c=='p' && !sequence.empty() && sequence.back()=='$') {
+        int mode = 0;
+        auto end = sequence.data()+sequence.size()-1;
+        auto parsed = std::from_chars(sequence.data()+priv,end,mode);
+        if (reply && parsed.ec==std::errc{} && parsed.ptr==end && mode>=0) {
+            char answer[48];
+            snprintf(answer,sizeof(answer),"\033[%s%d;%d$y",priv ? "?" : "",mode,modeStatus(mode,priv));
+            reply(answer);
+        }
+        return;
+    }
+    if (c=='c' && (sequence==">" || sequence==">0")) { if (reply) reply("\033[>0;0;0c"); return; }
+    if (c=='q' && (sequence==">" || sequence==">0")) { if (reply) reply("\033P>|YaaTerm\033\\"); return; }
     // Vim's CSI ? 4 m is a keyboard-protocol query, not underline SGR.
     if (priv && c != 'h' && c != 'l' && c != 'n' && c != 'J' && c != 'K') return;
     std::array<int, 32> args{};
     int count = 1;
-    for (size_t i = priv; i < sequence.size(); ++i) {
+    if (c=='m' && sequence.find(':')!=sequence.npos) count = extendedSGR(sequence,args);
+    else for (size_t i = priv; i < sequence.size(); ++i) {
         char k = sequence[i];
         if (k >= '0' && k <= '9') args[count-1] = std::min(9999, args[count-1]*10 + k-'0');
         else if (k == ';' && count < (int)args.size()) ++count;
@@ -391,8 +475,22 @@ void Screen::control(char c) {
     }
     auto &b = active();
     int a = args[0], n = std::max(1, a);
-    if (c != 's' && c != 'u' && c != 'm' && c != 'h' && c != 'l' && c != 'n' && c != 'c') b.cursor.wrapPending = false;
+    if (c != 's' && c != 'u' && c != 'm' && c != 'h' && c != 'l' && c != 'n' && c != 'c' && c != 'b') b.cursor.wrapPending = false;
     switch (c) {
+        case 'g':
+            if (!a) tabs.reset(b.cursor.x); else if (a==3) tabs.reset();
+            break;
+        case 'I': case 'Z': moveTabs(n,c=='I'); break;
+        case 'b': {
+            int x = b.cursor.wrapPending ? b.cursor.x : b.cursor.x-1;
+            if (x>=0 && !b.rows[b.cursor.y][x].width) --x;
+            if (x>=0) {
+                Cell glyph = b.rows[b.cursor.y][x];
+                for (int i=0;i<n;++i) writeGlyph(glyph.ch,glyph.width,glyph.mark);
+                graphicAdjacent = true;
+            }
+            break;
+        }
         case 'A': b.cursor.y = std::max(b.cursor.y >= b.top ? b.top : 0, b.cursor.y-n); break;
         case 'B': case 'e': b.cursor.y = std::min(b.cursor.y <= b.bottom ? b.bottom : height-1, b.cursor.y+n); break;
         case 'C': case 'a': b.cursor.x += n; break;
@@ -447,7 +545,7 @@ void Screen::control(char c) {
                 snprintf(s,sizeof(s),"\033[%s%d;%dR",priv ? "?" : "",row,b.cursor.x+1); reply(s);
             }
             break;
-        case 'c': if (reply) reply("\033[?1;2c"); break;
+        case 'c': if (reply && !a) reply("\033[?1;2c"); break;
         case 'm': {
             Style &pen = b.cursor.pen;
             for (int i = 0; i < count; ++i) {
@@ -582,7 +680,8 @@ void Screen::byte(uint8_t c) {
     }
     if (state == OSC || state == OSCExit || state == Ignore || state == IgnoreExit) {
         bool osc = state == OSC || state == OSCExit;
-        if (c == 7 || (c == '\\' && (state == OSCExit || state == IgnoreExit))) {
+        if (c==24 || c==26) { state = Text; return; }
+        if ((osc && c == 7) || (c == '\\' && (state == OSCExit || state == IgnoreExit))) {
             if (osc) finishOSC(); else state = Text;
         } else if (c == 27) state = osc ? OSCExit : IgnoreExit;
         else {
@@ -599,11 +698,17 @@ void Screen::byte(uint8_t c) {
         if (c == 13) { b.cursor.x = 0; b.cursor.wrapPending = false; }
         else if (c == 10 || c == 11 || c == 12) lineFeed();
         else if (c == 8) { b.cursor.x = std::max(0,b.cursor.x-1); b.cursor.wrapPending = false; }
-        else if (c == 9) { b.cursor.x = std::min(cols-1,(b.cursor.x/8+1)*8); b.cursor.wrapPending = false; }
+        else if (c == 9) moveTabs(1,true);
+        else if (c == 14 || c == 15) b.cursor.shift = c==14;
         else if (c == 24 || c == 26) state = Text;
         return;
     }
-    if (state == Charset) { state = Text; return; }
+    if (c == 127) return;
+    if (state == Charset) {
+        if ((charsetTarget=='(' || charsetTarget==')') && (c=='0' || c=='A' || c=='B'))
+            b.cursor.charsets[charsetTarget==')'] = c;
+        state = Text; return;
+    }
     if (state == Escape) {
         state = Text;
         sequence.clear(); truncated = false;
@@ -611,7 +716,8 @@ void Screen::byte(uint8_t c) {
             case '[': state = CSI; break;
             case ']': state = OSC; break;
             case 'P': case '^': case '_': state = Ignore; break;
-            case '(': case ')': case '#': case '%': state = Charset; break;
+            case '(': case ')': case '#': case '%': charsetTarget = c; state = Charset; break;
+            case 'H': tabs.set(b.cursor.x); break;
             case '7': control('s'); break;
             case '8': control('u'); break;
             case 'D': lineFeed(); break;
@@ -625,7 +731,13 @@ void Screen::byte(uint8_t c) {
         else if (sequence.size() < 192) sequence += c; else truncated = true;
         return;
     }
-    if (c < 127) put(c);
+    if (c < 127) {
+        char charset = b.cursor.charsets[b.cursor.shift];
+        static constexpr char32_t dec[] = U" ◆▒␉␌␍␊°±␤␋┘┐┌└┼⎺⎻─⎼⎽├┤┴┬│≤≥π≠£·";
+        if (charset=='0' && c>=0x5f) put(dec[c-0x5f]);
+        else if (charset=='A' && c=='#') put(U'£');
+        else put(c);
+    }
     else if (c >= 0xc2 && c <= 0xdf) { remaining=1; scalar=c&31; minimum=0x80; }
     else if (c >= 0xe0 && c <= 0xef) { remaining=2; scalar=c&15; minimum=0x800; }
     else if (c >= 0xf0 && c <= 0xf4) { remaining=3; scalar=c&7; minimum=0x10000; }
@@ -636,9 +748,30 @@ void Screen::feed(std::string_view bytes) {
     if (frozen()) thaw();
     bufferChanged = false;
     dirtyFirst = dirtyLast = y();
-    for (uint8_t c : bytes) {
+    for (size_t pos=0; pos<bytes.size();) {
+        uint8_t c = bytes[pos];
+        if (c>=32 && c<127 && state==Text && !remaining && !insert) {
+            auto &buffer = active();
+            auto &cursor = buffer.cursor;
+            auto &line = buffer.rows[cursor.y];
+            // Fresh ASCII runs need no glyph lookup or wide-cell boundary repair.
+            if (!cursor.wrapPending && cursor.x>=line.written && cursor.charsets[cursor.shift]=='B') {
+                size_t end = pos+std::min(bytes.size()-pos,(size_t)(cols-cursor.x));
+                do {
+                    line[cursor.x++] = Cell{cursor.pen,c,0,1,writeTag};
+                    ++pos;
+                    if (pos==end) break;
+                    c = bytes[pos];
+                } while (c>=32 && c<127);
+                line.written = cursor.x;
+                if (cursor.x==cols) { cursor.wrapPending = true; --cursor.x; }
+                graphicAdjacent = true;
+                damage(cursor.y,cursor.y);
+                continue;
+            }
+        }
         if (state == CSI && c >= 0x40 && c <= 0x7e) damage(y(), y());
-        byte(c);
+        byte(c); ++pos;
     }
     damage(y(), y());
 }

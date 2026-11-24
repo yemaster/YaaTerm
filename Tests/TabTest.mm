@@ -22,6 +22,25 @@
 - (NSRange)findColumnsInRow:(int)y;
 @end
 
+@interface TestKeyView : TerminalView
+@property (copy) NSString *sent;
+@end
+@implementation TestKeyView
+- (void)sendString:(NSString *)value { self.sent = value; }
+@end
+
+static void checkTerminalKeys() {
+    TestKeyView *view = [[TestKeyView alloc] initWithFrame:NSMakeRect(0,0,320,120)];
+    auto check = [&](unsigned short code,NSEventModifierFlags modifiers,NSString *expected) {
+        NSEvent *event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:modifiers
+            timestamp:0 windowNumber:0 context:nil characters:@"" charactersIgnoringModifiers:@"" isARepeat:NO keyCode:code];
+        [view keyDown:event]; assert([view.sent isEqual:expected]);
+    };
+    check(122,0,@"\033OP"); check(111,NSEventModifierFlagShift,@"\033[24;2~");
+    check(124,NSEventModifierFlagControl,@"\033[1;5C");
+    [view consume:"\033[?1h"]; check(115,0,@"\033OH");
+}
+
 @interface MotionTestBar : TabBar
 @property BOOL motionEnabled;
 @end
@@ -439,6 +458,15 @@ static void checkVimWheel() {
     waitUntil(^BOOL{ return firstLine()==1001; });
     for (int i=0; i<4; ++i) wheel(kCGScrollEventUnitPixel,-6);
     waitUntil(^BOOL{ return firstLine()>1001; });
+    send(@"gg:set titlestring=click-ready\r"); waitForTitle(pane,@"click-ready");
+    CGFloat lh = [[pane valueForKey:@"lh"] doubleValue];
+    NSPoint point = [pane convertPoint:NSMakePoint(26,12+3.5*lh) toView:nil];
+    for (NSNumber *type in @[@(NSEventTypeLeftMouseDown),@(NSEventTypeLeftMouseUp)]) {
+        NSEvent *event = [NSEvent mouseEventWithType:(NSEventType)type.integerValue location:point modifierFlags:0 timestamp:0
+                                        windowNumber:window.windowNumber context:nil eventNumber:1 clickCount:1 pressure:1];
+        if (event.type==NSEventTypeLeftMouseDown) [pane mouseDown:event]; else [pane mouseUp:event];
+    }
+    send(@":let &titlestring='clicked-'.line('.')\r"); waitForTitle(pane,@"clicked-4");
     send(@":q!\r"); waitForTitle(pane,@"wheel-exited");
     send(@"seq 1 90; printf '\\033]2;wheel-history\\007'\r");
     waitForTitle(pane,@"wheel-history");
@@ -853,7 +881,7 @@ static void checkTransfers() {
 int main() {
     setenv("SHELL","/bin/sh",1); setenv("ENV","/dev/null",1);
     @autoreleasepool {
-        checkSelectionMotion();
+        checkTerminalKeys(); checkSelectionMotion();
         checkWindowEdge(); checkSessionExit(); checkSettings(); checkVimWheel(); checkTabGroups(); checkSleepingTabs(); checkFind(); checkBackdrop(); checkNoticeEvents(); checkTransfers();
         TabWorkspace *w = [[TabWorkspace alloc] initWithFrame:NSMakeRect(0,0,800,500)];
         __block BOOL closed = NO; w.onEmpty = ^{ closed = YES; };

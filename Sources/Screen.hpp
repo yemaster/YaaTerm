@@ -3,6 +3,7 @@
 #include <memory>
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include <cstdint>
 #include <cstdio>
 #include <deque>
@@ -16,6 +17,8 @@ namespace yaa {
 struct Cursor {
     int x = 0, y = 0;
     Style pen;
+    char charsets[2] = {'B','B'};
+    bool shift = false;
     bool wrapPending = false, autoWrap = true, origin = false;
 };
 struct Buffer {
@@ -24,6 +27,7 @@ struct Buffer {
     int top = 0, bottom = 0;
     uint32_t link = 0;
 };
+enum class MouseAction { Press, Release, Motion };
 enum class MouseEncoding { Classic, Utf8 = 1005, Sgr = 1006, Urxvt = 1015, SgrPixels = 1016 };
 
 class Screen {
@@ -36,6 +40,8 @@ public:
     int mouseTracking = 0;
     MouseEncoding mouseEncoding = MouseEncoding::Classic;
     bool alternateScroll = true;
+    size_t mouseReport(char (&out)[48], int button, MouseAction action, int modifiers,
+                       int col, int row, int pixelX, int pixelY) const;
     size_t wheelReport(char (&out)[48], bool up, int modifiers, int col, int row, int pixelX, int pixelY) const;
     bool bufferChanged = false; // Set on any screen switch in the most recent feed.
     int dirtyFirst = 0, dirtyLast = 0;
@@ -53,7 +59,10 @@ public:
     static bool isAgentCommand(std::string_view name);
     std::function<void(std::string_view,int,int)> commandExited;
     std::function<void(std::string_view,bool)> agentFinished;
-    explicit Screen(int w, int h) { resize(w, h); }
+    explicit Screen(int w, int h) {
+        for (size_t col=8; col<tabs.size(); col+=8) tabs.set(col);
+        resize(w,h);
+    }
     void resize(int w, int h);
     void setHistoryLimit(size_t limit);
     void feed(std::string_view bytes);
@@ -87,6 +96,11 @@ private:
     size_t hotBytes = 0;
     size_t historyLimit = defaultHistoryLimit;
     bool insert = false, graphicAdjacent = false;
+    std::bitset<1000> tabs;
+    char charsetTarget = 0;
+    void moveTabs(int count, bool forward);
+    int modeStatus(int n, bool priv) const;
+    void writeGlyph(char32_t ch, int width, uint32_t mark);
     enum State { Text, Escape, CSI, OSC, OSCExit, Ignore, IgnoreExit, Charset } state = Text;
     std::string sequence;
     bool truncated = false;

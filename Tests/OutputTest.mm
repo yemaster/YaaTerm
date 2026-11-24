@@ -218,6 +218,10 @@ int main() {
         assert([NSBundle.mainBundle pathForResource:@".zshenv" ofType:nil inDirectory:@"Shell/zsh"]);
         NSURL *font = [NSURL fileURLWithPath:@"Resources/Fonts/JetBrainsMono-Regular.ttf"];
         CTFontManagerRegisterFontsForURL((__bridge CFURLRef)font,kCTFontManagerScopeProcess,nullptr);
+        yaa::Screen text(12,2);
+        text.feed(u8"X👨‍👩‍👧‍👦👍🏽🇨🇳Y");
+        auto outputLine = ReadOutputLine(text,{0,2});
+        assert([outputLine.text isEqual:@"X👨‍👩‍👧‍👦👍🏽🇨🇳Y"] && outputLine.index==1);
         checkListingFormats();
         testTerminalOutput(dir);
         assert([files removeItemAtPath:dir error:nil]);

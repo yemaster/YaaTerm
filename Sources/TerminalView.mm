@@ -77,6 +77,10 @@ static NSString *cellText(const Row &row, int start, int end, bool trim) {
     NSMutableDictionary<NSAttributedStringKey,id> *_faceAttributes[4][2];
     CGFloat _fontSize, _cw, _lh, _listingActionWidth, _listingReturnWidth, _textOffsetY, _scrollRemainder;
     bool _ignoreWheelMomentum;
+    NSTrackingArea *_motionArea;
+    unsigned _reportedButtons;
+    char _lastMotion[48];
+    size_t _lastMotionSize;
     int64_t _offset;
     int _topColumn, _anchor, _extent;
     std::vector<TextPoint> _visibleRows;
@@ -555,6 +559,16 @@ struct PaintedLine {
     bool tracking = _screen->focusReporting;
     int mouseMode = _screen->mouseTracking;
     _screen->feed(bytes);
+    if (mouseMode != _screen->mouseTracking) {
+        _lastMotionSize = 0;
+        if (!_screen->mouseTracking) _reportedButtons = 0;
+        if (_motionArea) { [self removeTrackingArea:_motionArea]; _motionArea = nil; }
+        if (_screen->mouseTracking==1003) {
+            _motionArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect
+                options:NSTrackingMouseMoved|NSTrackingActiveInKeyWindow|NSTrackingInVisibleRect owner:self userInfo:nil];
+            [self addTrackingArea:_motionArea];
+        }
+    }
     if (tracking != _screen->focusReporting) {
         _reportedFocus = !(self.window.isKeyWindow && self.window.firstResponder == self);
         [self trackWindowFocus];
@@ -813,6 +827,52 @@ struct PaintedLine {
     item.target = self; item.representedObject = url; item.toolTip = url.absoluteString;
     return menu;
 }
+- (size_t)mousePacket:(char (&)[48])packet event:(NSEvent *)event button:(int)button action:(MouseAction)action {
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    CGFloat x = std::clamp(point.x-insetX,0.,_screen->cols*_cw-1);
+    CGFloat y = std::clamp(point.y-insetY,0.,_screen->height*_lh-1);
+    auto flags = event.modifierFlags;
+    int mods = ((flags & NSEventModifierFlagShift) ? 4 : 0) | ((flags & NSEventModifierFlagOption) ? 8 : 0) |
+               ((flags & NSEventModifierFlagControl) ? 16 : 0);
+    return _screen->mouseReport(packet,button,action,mods,int(x/_cw)+1,int(y/_lh)+1,int(x)+1,int(y)+1);
+}
+- (BOOL)reportPointer:(NSEvent *)event button:(int)button action:(MouseAction)action {
+    if (!_screen->mouseTracking || _offset) return NO;
+    if (action==MouseAction::Press) {
+        if (event.modifierFlags & (NSEventModifierFlagShift|NSEventModifierFlagCommand)) return NO;
+        _reportedButtons |= 1u<<button;
+    } else if (button!=3 && !(_reportedButtons & (1u<<button))) return NO;
+    if (action==MouseAction::Release) _reportedButtons &= ~(1u<<button);
+    char packet[48];
+    size_t size = [self mousePacket:packet event:event button:button action:action];
+    if (action==MouseAction::Motion) {
+        if (size==_lastMotionSize && !memcmp(packet,_lastMotion,size)) return YES;
+        memcpy(_lastMotion,packet,size); _lastMotionSize = size;
+    } else _lastMotionSize = 0;
+    if (size) [_session sendBytes:packet length:size];
+    return YES;
+}
+- (void)mouseMoved:(NSEvent *)event {
+    if (![self reportPointer:event button:3 action:MouseAction::Motion]) [super mouseMoved:event];
+}
+- (void)rightMouseDown:(NSEvent *)event {
+    if (![self reportPointer:event button:2 action:MouseAction::Press]) [super rightMouseDown:event];
+}
+- (void)rightMouseDragged:(NSEvent *)event {
+    if (![self reportPointer:event button:2 action:MouseAction::Motion]) [super rightMouseDragged:event];
+}
+- (void)rightMouseUp:(NSEvent *)event {
+    if (![self reportPointer:event button:2 action:MouseAction::Release]) [super rightMouseUp:event];
+}
+- (void)otherMouseDown:(NSEvent *)event {
+    if (event.buttonNumber!=2 || ![self reportPointer:event button:1 action:MouseAction::Press]) [super otherMouseDown:event];
+}
+- (void)otherMouseDragged:(NSEvent *)event {
+    if (event.buttonNumber!=2 || ![self reportPointer:event button:1 action:MouseAction::Motion]) [super otherMouseDragged:event];
+}
+- (void)otherMouseUp:(NSEvent *)event {
+    if (event.buttonNumber!=2 || ![self reportPointer:event button:1 action:MouseAction::Release]) [super otherMouseUp:event];
+}
 - (void)mouseDown:(NSEvent *)event {
     if ((event.modifierFlags & NSEventModifierFlagCommand) && (_webLinks || _fileLinks)) {
         NSURL *url = [self linkAtPoint:[self convertPoint:event.locationInWindow fromView:nil]];
@@ -822,10 +882,17 @@ struct PaintedLine {
         }
     }
     [self.window makeFirstResponder:self];
+    if ([self reportPointer:event button:0 action:MouseAction::Press]) return;
     _anchor = _extent = [self indexAt:event]; self.needsDisplay = YES;
 }
-- (void)mouseDragged:(NSEvent *)event { _extent = [self indexAt:event]; self.needsDisplay = YES; }
-- (void)mouseUp:(NSEvent *)event { if (_extent == _anchor) { _extent = _anchor = -1; self.needsDisplay = YES; } }
+- (void)mouseDragged:(NSEvent *)event {
+    if ([self reportPointer:event button:0 action:MouseAction::Motion]) return;
+    _extent = [self indexAt:event]; self.needsDisplay = YES;
+}
+- (void)mouseUp:(NSEvent *)event {
+    if ([self reportPointer:event button:0 action:MouseAction::Release]) return;
+    if (_extent == _anchor) { _extent = _anchor = -1; self.needsDisplay = YES; }
+}
 - (void)scrollWheel:(NSEvent *)event {
     if (event.momentumPhase != NSEventPhaseNone && _ignoreWheelMomentum) return;
     CGFloat delta = event.scrollingDeltaY;
@@ -841,13 +908,7 @@ struct PaintedLine {
         char sequence[48];
         size_t length;
         if (reporting) {
-            NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-            CGFloat x = std::clamp(p.x-insetX,0.,_screen->cols*_cw-1);
-            CGFloat y = std::clamp(p.y-insetY,0.,_screen->height*_lh-1);
-            NSEventModifierFlags flags = event.modifierFlags;
-            int mods = ((flags & NSEventModifierFlagShift) ? 4 : 0) | ((flags & NSEventModifierFlagOption) ? 8 : 0) |
-                       ((flags & NSEventModifierFlagControl) ? 16 : 0);
-            length = _screen->wheelReport(sequence,steps>0,mods,int(x/_cw)+1,int(y/_lh)+1,int(x)+1,int(y)+1);
+            length = [self mousePacket:sequence event:event button:steps>0 ? 64 : 65 action:MouseAction::Press];
         } else {
             sequence[0] = '\033'; sequence[1] = _screen->applicationCursor ? 'O' : '[';
             sequence[2] = steps>0 ? 'A' : 'B'; length = 3;
@@ -1056,13 +1117,30 @@ struct PaintedLine {
             case 124: seq = _screen->applicationCursor ? @"\033OC" : @"\033[C"; break;
             case 125: seq = _screen->applicationCursor ? @"\033OB" : @"\033[B"; break;
             case 126: seq = _screen->applicationCursor ? @"\033OA" : @"\033[A"; break;
-            case 115: seq = @"\033[H"; break; case 119: seq = @"\033[F"; break;
+            case 115: seq = _screen->applicationCursor ? @"\033OH" : @"\033[H"; break;
+            case 119: seq = _screen->applicationCursor ? @"\033OF" : @"\033[F"; break;
+            case 114: seq = @"\033[2~"; break; // Insert / Help
+            case 122: seq = @"\033OP"; break; case 120: seq = @"\033OQ"; break;
+            case 99: seq = @"\033OR"; break; case 118: seq = @"\033OS"; break;
+            case 96: seq = @"\033[15~"; break; case 97: seq = @"\033[17~"; break;
+            case 98: seq = @"\033[18~"; break; case 100: seq = @"\033[19~"; break;
+            case 101: seq = @"\033[20~"; break; case 109: seq = @"\033[21~"; break;
+            case 103: seq = @"\033[23~"; break; case 111: seq = @"\033[24~"; break;
             case 116: seq = @"\033[5~"; break; case 121: seq = @"\033[6~"; break;
             case 117: seq = @"\033[3~"; break; case 51: seq = @"\177"; break;
             case 36: case 76: seq = @"\r"; break; case 53: seq = @"\033"; break;
             case 48: seq = (event.modifierFlags & NSEventModifierFlagShift) ? @"\033[Z" : @"\t"; break;
         }
-        if (seq) { [self sendString:seq]; return; }
+        if (seq) {
+            if (seq.length>=3 && event.keyCode!=48 && modifiers) {
+                int mod = 1 + !!(modifiers & NSEventModifierFlagShift) + 2*!!(modifiers & NSEventModifierFlagOption)
+                            + 4*!!(modifiers & NSEventModifierFlagControl);
+                unichar final = [seq characterAtIndex:seq.length-1];
+                NSString *param = final=='~' ? [seq substringWithRange:NSMakeRange(2,seq.length-3)] : @"1";
+                seq = [NSString stringWithFormat:@"\033[%@;%d%C",param,mod,final];
+            }
+            [self sendString:seq]; return;
+        }
         if (event.modifierFlags & NSEventModifierFlagControl) {
             NSString *chars = event.charactersIgnoringModifiers.lowercaseString;
             if (chars.length == 1) {

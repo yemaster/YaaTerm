@@ -79,7 +79,11 @@ make test
 
 验证分屏时，可以在同一标签页中按 ⌘ D，在两边分别运行 `echo $$` 和 `stty size`，再拖动分隔线重新查看尺寸。按 ⇧ ⌘ D 可在当前分屏内继续上下分割。
 
-这个版本实现了常用 VT 控制序列。历史内容按原行保存，改变列宽时没有软换行重排。目前支持常用鼠标滚轮报告。复杂 emoji 合字、其他鼠标事件和完整的 xterm 兼容性尚未实现。
+### 字符与终端协议
+
+支持 Unicode Emoji 17.0 的家庭、职业、肤色、旗帜和键帽组合。组合 emoji 占两列，复制与搜索保留完整 Unicode 序列。字符网格每格 16 字节，所有会话共享一份只读序列表。具体图形由当前 macOS 字体绘制。[Unicode Emoji](https://www.unicode.org/reports/tr51/)
+
+支持 DEC 线框字符集、可设置的制表位、字符重复、终端模式查询、冒号形式的真彩色参数，以及 F1–F12 和修饰键。Vim 等程序启用鼠标后可点选、拖动、滚动，按住 Shift 可以选取终端文字。全移动报告仅在程序请求时开启，同一位置的重复移动会合并。当前未实现 SIXEL 图形和部分 xterm 扩展。[XTerm 控制序列](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html)
 
 ## 版本与更新
 
