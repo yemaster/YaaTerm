@@ -28,5 +28,10 @@ if before and before != "0" * 40:
             raise SystemExit("A new release must increase both version and build number")
         publish = True
 
+# A failed release can finish on the next push, after the fix passes CI.
+if os.environ.get("GITHUB_EVENT_NAME") == "push":
+    published_tag = subprocess.check_output(["git", "tag", "--list", f"v{version}"]).strip()
+    publish = publish or not published_tag
+
 print(f"version={version}")
 print(f"publish={str(publish).lower()}")
