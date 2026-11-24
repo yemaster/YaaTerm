@@ -796,12 +796,18 @@ static void checkWindowEdge() {
 static void checkNoticeEvents() {
     TabWorkspace *work = [[TabWorkspace alloc] initWithFrame:NSMakeRect(0,0,640,400)];
     [work addTab]; TerminalView *pane = work.focused;
-    [work splitVertical:YES];
+    SetTerminalPreference(CommandNoticesKey,AgentOnly);
     pane.agentFinished(pane,@"codex",NO);
-    pane.commandExited(pane,@"codex",0,12); // Same tab, different pane.
-    assert(!TaskNotice.recent.count);
-    [work addTab]; [work selectIndex:0]; // Back in the source before it exits.
-    pane.commandExited(pane,@"codex",0,12);
+    assert(TaskNotice.unreadCount==1 && [TaskNotice.recent.firstObject.title isEqual:@"codex 任务完成"]);
+    [work splitVertical:YES];
+    pane.agentFinished(pane,@"claude",YES);
+    assert(TaskNotice.unreadCount==2 && [TaskNotice.recent.firstObject.title isEqual:@"claude 任务失败"]);
+    pane.commandExited(pane,@"agy",0,1); // One-shot agent without a separate turn event.
+    assert(TaskNotice.unreadCount==3 && TaskNotice.recent.firstObject.source==pane);
+    [TaskNotice discardFor:pane];
+    SetTerminalPreference(CommandNoticesKey,AllCommands);
+    [work addTab]; [work selectIndex:0];
+    pane.commandExited(pane,@"sleep",0,42);
     assert(!TaskNotice.recent.count);
     [work selectIndex:1];
     SetTerminalPreference(CommandNoticesKey,LongCommands);

@@ -223,11 +223,10 @@ static NSSize minPane(NSView *view) {
     return self.window && front != self.window && [(id)front.windowController conformsToProtocol:@protocol(WorkspaceWindow)];
 }
 - (void)finishedCommand:(NSString *)name status:(int)status seconds:(int)seconds inPane:(TerminalView *)pane tab:(TerminalTab *)tab {
-    if (![self isAwayFromTab:tab]) return;
-    NSInteger policy = [TerminalPreferences() integerForKey:CommandNoticesKey];
-    if (policy != AllCommands) {
-        BOOL agent = yaa::Screen::isAgentCommand(name.UTF8String);
-        if (!agent && (policy==AgentOnly || seconds<10)) return;
+    if (!yaa::Screen::isAgentCommand(name.UTF8String)) {
+        if (![self isAwayFromTab:tab]) return;
+        NSInteger policy = [TerminalPreferences() integerForKey:CommandNoticesKey];
+        if (policy==AgentOnly || (policy==LongCommands && seconds<10)) return;
     }
     NSString *title = [name stringByAppendingString:status ? @" 已结束" : @" 已完成"];
     NSString *summary = status ? [NSString stringWithFormat:@"退出码 %d · 用时 %d 秒",status,seconds]
@@ -248,7 +247,7 @@ static NSSize minPane(NSView *view) {
     };
     pane.agentFinished = ^(TerminalView *v, NSString *name, BOOL failed) {
         TerminalTab *t = weakTab;
-        if (![t.owner isAwayFromTab:t]) return;
+        if (!t.owner) return;
         NSString *title = [name stringByAppendingString:failed ? @" 任务失败" : @" 任务完成"];
         [TaskNotice postFrom:v window:t.owner.window title:title summary:failed ? @"回到会话查看错误。" : @"本轮任务已结束，点击查看回复。"];
     };
