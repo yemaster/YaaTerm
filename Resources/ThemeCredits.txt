@@ -1,0 +1,55 @@
+Catppuccin, One Half, Solarized, GitHub and Tomorrow use the Ghostty ports in iTerm2-Color-Schemes
+https://github.com/mbadolato/iTerm2-Color-Schemes/tree/master/ghostty
+
+Catppuccin Latte and Mocha
+Copyright (c) 2021 Catppuccin
+https://github.com/catppuccin/catppuccin
+
+One Half Light and Dark
+Copyright (c) 2019 Son A. Pham <sp@sonpham.me>
+https://github.com/sonph/onehalf
+
+Solarized Light and Dark (iTerm2 variants)
+Copyright (c) 2011 Ethan Schoonover
+https://ethanschoonover.com/solarized/
+
+GitHub Light and Dark (GitHub Light Default and GitHub Dark Default)
+Copyright (c) 2020 Primer
+https://github.com/primer/github-vscode-theme
+
+Tomorrow and Tomorrow Night
+Copyright (c) 2011 Chris Kempson
+https://github.com/chriskempson/tomorrow-theme
+
+VS Light and VS Dark (Light/Dark Visual Studio themes in Visual Studio Code)
+Copyright (c) Microsoft Corporation
+https://github.com/microsoft/vscode/tree/main/extensions/theme-defaults/themes
+https://github.com/microsoft/vscode/blob/main/src/vs/workbench/contrib/terminal/common/terminalColorRegistry.ts
+https://github.com/microsoft/vscode/blob/main/src/vs/platform/theme/common/colors/editorColors.ts
+The cursor uses the default foreground. Selected text retains its glyph color.
+
+MIT License
+
+Copyright (c) 2011 to Present Mark Badolato
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+This license covers the iTerm-Color-Schemes repository collection of themes. 
+
+The copyright/license for each individual theme belongs to the author of that theme.
