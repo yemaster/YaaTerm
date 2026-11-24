@@ -1,3 +1,4 @@
+#include "Emoji.hpp"
 #import "TerminalOutput.h"
 #include <mutex>
 
@@ -105,7 +106,10 @@ OutputLine ReadOutputLine(const yaa::Screen &screen, yaa::TextPoint point) {
             if (!r[x].width) continue;
             if (i == point.row && point.column >= x && point.column < x+(int)r[x].width) line.index = units.size();
             appendUnit(units,r[x].ch);
-            if (r[x].mark) appendUnit(units,r[x].mark);
+            if (r[x].mark) {
+                char32_t tail[yaa::emoji::maxScalars];
+                for (char32_t c : yaa::emoji::suffix(r[x].mark,tail)) appendUnit(units,c);
+            }
         }
         if (!r.wrapAt) break;
     }

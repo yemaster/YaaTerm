@@ -3,8 +3,8 @@ BIN := $(APP)/Contents/MacOS/YaaTerm
 CXX := xcrun clang++
 FLAGS := -std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=13.0
 SPARKLE := build/dependencies/sparkle-2.10.1
-GRID := Sources/Screen.cpp Sources/History.cpp
-GRID_HEADERS := Sources/Screen.hpp Sources/History.hpp Sources/TerminalRow.hpp
+GRID := Sources/Emoji.cpp Sources/Screen.cpp Sources/History.cpp
+GRID_HEADERS := Sources/Emoji.hpp Sources/EmojiData.inc Sources/Screen.hpp Sources/History.hpp Sources/TerminalRow.hpp
 SOURCES := Sources/AppUpdates.mm Sources/Main.mm Sources/TaskNotices.mm Sources/LLMConfiguration.mm Sources/LLMSettingsForm.mm Sources/Wallpaper.mm Sources/WindowContent.mm Sources/TabBar.mm Sources/TabWorkspace.mm Sources/TerminalView.mm Sources/TerminalOutput.mm Sources/FindBar.mm Sources/Session.mm $(GRID) Sources/TerminalSearch.cpp Sources/Preferences.mm Sources/Palette.mm Sources/SettingsView.mm
 UPDATE_TEST := build/tests/UpdateTest.app/Contents/MacOS/YaaTerm
 OUTPUT_TEST := build/tests/output/output-test
@@ -16,7 +16,7 @@ all: $(BIN)
 $(SPARKLE)/.ready: scripts/fetch-sparkle.sh
 	sh $<
 
-$(BIN): $(SPARKLE)/.ready $(SOURCES) $(wildcard Sources/*.h Sources/*.hpp) Makefile Info.plist Resources/YaaTerm.icns Resources/ThemeCredits.txt $(wildcard Resources/ReleaseNotes/*.txt) $(wildcard Resources/Fonts/*) $(SHELL_RESOURCES)
+$(BIN): $(SPARKLE)/.ready $(SOURCES) $(wildcard Sources/*.h Sources/*.hpp Sources/*.inc) Makefile Info.plist Resources/Unicode-LICENSE.txt Resources/YaaTerm.icns Resources/ThemeCredits.txt $(wildcard Resources/ReleaseNotes/*.txt) $(wildcard Resources/Fonts/*) $(SHELL_RESOURCES)
 	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
 	cp Info.plist $(APP)/Contents/
 	rsync -a --delete --exclude=.DS_Store Resources/ $(APP)/Contents/Resources/
@@ -50,11 +50,11 @@ build/session-test: Tests/SessionTest.mm Sources/Session.mm Sources/Session.h
 	mkdir -p build
 	$(CXX) $(FLAGS) -fobjc-arc -ISources Tests/SessionTest.mm Sources/Session.mm -framework Foundation -framework AppKit -o $@
 
-build/selection-test: Tests/SelectionTest.mm Sources/Wallpaper.mm Sources/TerminalView.mm Sources/TerminalOutput.mm Sources/FindBar.mm Sources/Palette.mm Sources/Preferences.mm Sources/Session.mm $(GRID) Sources/TerminalSearch.cpp $(wildcard Sources/*.h Sources/*.hpp)
+build/selection-test: Tests/SelectionTest.mm Sources/Wallpaper.mm Sources/TerminalView.mm Sources/TerminalOutput.mm Sources/FindBar.mm Sources/Palette.mm Sources/Preferences.mm Sources/Session.mm $(GRID) Sources/TerminalSearch.cpp $(wildcard Sources/*.h Sources/*.hpp Sources/*.inc)
 	mkdir -p build
 	$(CXX) $(FLAGS) -lcompression -fobjc-arc -ISources $(filter %.mm %.cpp,$^) -framework AppKit -framework CoreGraphics -framework CoreText -framework ImageIO -framework QuartzCore -o $@
 
-$(OUTPUT_TEST): Tests/OutputTest.mm Sources/Session.mm Sources/TerminalView.mm Sources/TerminalOutput.mm Sources/FindBar.mm Sources/Wallpaper.mm Sources/Palette.mm Sources/Preferences.mm Sources/TerminalSearch.cpp $(GRID) $(wildcard Sources/*.h Sources/*.hpp) $(BIN)
+$(OUTPUT_TEST): Tests/OutputTest.mm Sources/Session.mm Sources/TerminalView.mm Sources/TerminalOutput.mm Sources/FindBar.mm Sources/Wallpaper.mm Sources/Palette.mm Sources/Preferences.mm Sources/TerminalSearch.cpp $(GRID) $(wildcard Sources/*.h Sources/*.hpp Sources/*.inc) $(BIN)
 	mkdir -p $(@D)
 	ln -sfn "$(abspath $(APP))/Contents/Resources/Shell" $(@D)/Shell
 	$(CXX) $(FLAGS) -lcompression -fobjc-arc -ISources $(filter %.mm %.cpp,$^) -framework AppKit -framework CoreText -framework QuartzCore -framework ImageIO -o $@
@@ -67,11 +67,11 @@ $(HIGHLIGHT_TEST): Tests/HighlightTest.mm Sources/Session.mm Sources/Session.h $
 	ln -sfn "$(abspath $(APP))/Contents/Resources" $(@D)/../Resources
 	$(CXX) $(FLAGS) -lcompression -fobjc-arc -ISources Tests/HighlightTest.mm Sources/Session.mm $(GRID) -framework AppKit -o $@
 
-build/tab-test: $(SPARKLE)/.ready Tests/TabTest.mm $(filter-out Sources/Main.mm,$(SOURCES)) $(wildcard Sources/*.h Sources/*.hpp)
+build/tab-test: $(SPARKLE)/.ready Tests/TabTest.mm $(filter-out Sources/Main.mm,$(SOURCES)) $(wildcard Sources/*.h Sources/*.hpp Sources/*.inc)
 	mkdir -p build
 	$(CXX) $(FLAGS) -F$(SPARKLE) -lcompression -fobjc-arc -ISources $(filter %.mm %.cpp,$^) -framework AppKit -framework QuartzCore -framework ImageIO -framework UniformTypeIdentifiers -framework Security -o $@
 
-build/llm-test: $(SPARKLE)/.ready Sources/AppUpdates.mm Tests/LLMTest.mm Sources/LLMConfiguration.mm Sources/LLMSettingsForm.mm Sources/SettingsView.mm Sources/Wallpaper.mm Sources/Palette.mm Sources/Preferences.mm $(wildcard Sources/*.h Sources/*.hpp)
+build/llm-test: $(SPARKLE)/.ready Sources/AppUpdates.mm Tests/LLMTest.mm Sources/LLMConfiguration.mm Sources/LLMSettingsForm.mm Sources/SettingsView.mm Sources/Wallpaper.mm Sources/Palette.mm Sources/Preferences.mm $(wildcard Sources/*.h Sources/*.hpp Sources/*.inc)
 	mkdir -p build
 	$(CXX) $(FLAGS) -F$(SPARKLE) -fobjc-arc -ISources -DSecItemCopyMatching=LLMTestCopyMatching -DSecItemUpdate=LLMTestUpdate -DSecItemAdd=LLMTestAdd $(filter %.mm,$^) -framework AppKit -framework UniformTypeIdentifiers -framework ImageIO -framework Security -o $@
 
@@ -79,7 +79,7 @@ build/vim-test: Tests/VimTest.mm Sources/Session.mm $(GRID) $(GRID_HEADERS) Sour
 	mkdir -p build
 	$(CXX) $(FLAGS) -lcompression -fobjc-arc -ISources $(filter %.mm %.cpp,$^) -framework AppKit -o $@
 
-$(UPDATE_TEST): Tests/UpdateTest.mm Sources/AppUpdates.mm Sources/SettingsView.mm Sources/LLMSettingsForm.mm Sources/LLMConfiguration.mm Sources/Wallpaper.mm Sources/Palette.mm Sources/Preferences.mm $(wildcard Sources/*.h Sources/*.hpp) $(BIN)
+$(UPDATE_TEST): Tests/UpdateTest.mm Sources/AppUpdates.mm Sources/SettingsView.mm Sources/LLMSettingsForm.mm Sources/LLMConfiguration.mm Sources/Wallpaper.mm Sources/Palette.mm Sources/Preferences.mm $(wildcard Sources/*.h Sources/*.hpp Sources/*.inc) $(BIN)
 	mkdir -p $(@D)
 	cp Info.plist $(@D)/../
 	plutil -replace CFBundleIdentifier -string dev.yaaterm.tests.update $(@D)/../Info.plist

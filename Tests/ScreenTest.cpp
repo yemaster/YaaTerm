@@ -118,6 +118,24 @@ int main() {
         if (hit) *hit = search.match;
         return state == TerminalSearch::Found;
     };
+    Screen clusters(7,2);
+    std::string emojiLine = u8"👩🏽‍💻🇨🇳1️⃣";
+    for (char c : emojiLine) clusters.feed(std::string_view(&c,1));
+    assert(clusters.x()==6 && sizeof(Cell)==16);
+    for (int x=0;x<6;x+=2) assert(clusters.row(0)[x].width==2 && !clusters.row(0)[x+1].width);
+    clusters.feed(u8"❤️"); // A text-width base widens at the right edge.
+    assert(clusters.row(0).wrapAt==6 && clusters.row(1)[0].width==2 && clusters.x()==2);
+    clusters.setHistoryLimit(1);
+    clusters.feed("\r\n");
+    for (int i=0;i<40;++i) clusters.feed("next\r\n");
+    clusters.freeze(); clusters.thaw(); clusters.resize(5,3);
+    for (bool reverse : {false,true}) {
+        TextMatch hit;
+        assert(find(clusters,U"👩🏽‍💻🇨🇳1️⃣❤️",reverse,
+                    reverse ? TextPoint{clusters.historySize()+2,INT_MAX} : TextPoint{},&hit));
+        assert(hit.first.column==0 && hit.last.column==1);
+    }
+
     Screen paged(12,3);
     paged.setHistoryLimit(1);
     paged.feed("\033[31m1234567890中AbCe\xcc\x81-end\033[0m\r\n");

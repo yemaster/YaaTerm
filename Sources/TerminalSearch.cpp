@@ -1,4 +1,5 @@
 #include "TerminalSearch.hpp"
+#include "Emoji.hpp"
 #include <climits>
 #include <cwctype>
 
@@ -48,9 +49,14 @@ TerminalSearch::Result TerminalSearch::step(const Screen &screen, int rowBudget)
             const auto &c = cells[x];
             if (!c.width) continue;
             Glyph glyph{{row,x},(int)c.width};
-            if (reverse && c.mark && accept(c.mark,glyph)) return Found;
-            if (accept(c.ch,glyph)) return Found;
-            if (!reverse && c.mark && accept(c.mark,glyph)) return Found;
+            if (!reverse && accept(c.ch,glyph)) return Found;
+            if (c.mark) {
+                char32_t buffer[emoji::maxScalars];
+                auto tail = emoji::suffix(c.mark,buffer);
+                for (size_t i=0; i<tail.size(); ++i)
+                    if (accept(tail[reverse ? tail.size()-1-i : i],glyph)) return Found;
+            }
+            if (reverse && accept(c.ch,glyph)) return Found;
         }
         if (!reverse && !cells.wrapAt) matched = 0;
         row += reverse ? -1 : 1; column = reverse ? INT_MAX : 0;

@@ -1,4 +1,5 @@
 #include "Screen.hpp"
+#include "Emoji.hpp"
 #include <utility>
 #include <charconv>
 #include <compression.h>
@@ -108,6 +109,7 @@ void Screen::resize(int w, int h) {
     w = std::clamp(w, 2, 1000);
     h = std::clamp(h, 1, 500);
     if (w == cols && h == height) return;
+    graphicAdjacent = false;
     if (frozen()) thaw();
     resizeBuffer(active(), w, h);
     cols = w; height = h;
@@ -244,15 +246,56 @@ void Screen::erase(Row &r, int first, int end) {
     if (end >= r.written) r.written = std::min(r.written,first);
     std::fill(r.begin() + first, r.begin() + end, blank());
 }
+bool Screen::extendEmoji(char32_t ch) {
+    auto &b = active();
+    auto &cursor = b.cursor;
+    Row &row = b.rows[cursor.y];
+    int x = cursor.wrapPending ? cursor.x : cursor.x-1;
+    if (x >= 0 && !row[x].width) --x;
+    if (x < 0) return false;
+    uint32_t mark = emoji::extend(row[x].ch,row[x].mark,ch);
+    if (!mark) return false;
+    row[x].mark = mark;
+    damage(cursor.y,cursor.y);
+    if (row[x].width==2 || !emoji::wideMark(mark)) return true;
+
+    // A variation selector, flag or keycap can widen an already displayed base.
+    Cell glyph = row[x];
+    if (insert && x+1 < cols) {
+        std::move_backward(row.begin()+x+1,row.end()-1,row.end());
+        if (row.written>x+1) row.written = std::min(cols,row.written+1);
+    }
+    if (x+1 == cols) {
+        if (!cursor.autoWrap) return true;
+        erase(row,x,cols);
+        lineFeed(x); x = 0;
+    }
+    Row &dest = b.rows[cursor.y];
+    erase(dest,x,x+2);
+    dest[x] = glyph; dest[x].width = 2;
+    dest[x+1] = Cell{glyph.style,0,0,0,(uint32_t)glyph.tag};
+    dest.written = std::max(dest.written,x+2);
+    cursor.wrapPending = x+2 == cols;
+    cursor.x = std::min(cols-1,x+2);
+    damage(cursor.y,cursor.y);
+    return true;
+}
 void Screen::put(char32_t ch) {
     auto &b = active();
-    int width = ch < 127 ? 1 : wcwidth(static_cast<wchar_t>(ch));
+    int width = 1;
+    if (ch >= 127) {
+        if (graphicAdjacent && extendEmoji(ch)) return;
+        width = wcwidth(static_cast<wchar_t>(ch));
+        if (width != 2 && ((ch>=0x2300 && ch<=0x3299) || (ch>=0x1f000 && ch<=0x1faff)) &&
+            emoji::wideBase(ch)) width = 2;
+    }
     if (width == 0) {
         int prev = b.cursor.wrapPending ? b.cursor.x : b.cursor.x - 1;
         if (prev >= 0 && b.rows[b.cursor.y][prev].width == 0) --prev;
-        if (prev >= 0) { b.rows[b.cursor.y][prev].mark = ch; damage(b.cursor.y, b.cursor.y); }
+        if (prev >= 0 && b.rows[b.cursor.y][prev].mark < emoji::firstMark) { b.rows[b.cursor.y][prev].mark = ch; damage(b.cursor.y, b.cursor.y); }
         return;
     }
+    graphicAdjacent = true;
     width = width == 2 ? 2 : 1;
     if (b.cursor.autoWrap && (b.cursor.wrapPending || b.cursor.x + width > cols)) {
         lineFeed(b.cursor.wrapPending ? cols : b.cursor.x); b.cursor.x = 0;
@@ -550,8 +593,9 @@ void Screen::byte(uint8_t c) {
         }
         return;
     }
-    if (c == 27) { state = Escape; return; }
+    if (c == 27) { graphicAdjacent = false; state = Escape; return; }
     if (c < 32) {
+        graphicAdjacent = false;
         if (c == 13) { b.cursor.x = 0; b.cursor.wrapPending = false; }
         else if (c == 10 || c == 11 || c == 12) lineFeed();
         else if (c == 8) { b.cursor.x = std::max(0,b.cursor.x-1); b.cursor.wrapPending = false; }

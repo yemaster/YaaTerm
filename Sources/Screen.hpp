@@ -86,7 +86,7 @@ private:
     void reflowMain(int w, int h);
     size_t hotBytes = 0;
     size_t historyLimit = defaultHistoryLimit;
-    bool insert = false;
+    bool insert = false, graphicAdjacent = false;
     enum State { Text, Escape, CSI, OSC, OSCExit, Ignore, IgnoreExit, Charset } state = Text;
     std::string sequence;
     bool truncated = false;
@@ -99,6 +99,7 @@ private:
     void scroll(int first, int last, bool up, bool save);
     void lineFeed(int wrapAt = 0);
     void erase(Row &r, int first, int end);
+    bool extendEmoji(char32_t ch);
     void put(char32_t ch);
     void byte(uint8_t c);
     void control(char c);

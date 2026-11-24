@@ -1,3 +1,4 @@
+#include "Emoji.hpp"
 #import "TerminalView.h"
 #import "FindBar.h"
 #import "TerminalOutput.h"
@@ -45,7 +46,10 @@ static NSString *cellText(const Row &row, int start, int end, bool trim) {
     for (int i = start; i < end; ++i) {
         if (!row[i].width) continue;
         appendScalar(units,row[i].ch);
-        if (row[i].mark) appendScalar(units,row[i].mark);
+        if (row[i].mark) {
+            char32_t tail[yaa::emoji::maxScalars];
+            for (char32_t c : yaa::emoji::suffix(row[i].mark,tail)) appendScalar(units,c);
+        }
     }
     return units.empty() ? @"" : [NSString stringWithCharacters:units.data() length:units.size()];
 }
