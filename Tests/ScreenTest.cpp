@@ -7,6 +7,23 @@
 
 using namespace yaa;
 using namespace std::string_view_literals;
+static void checkScrollOrder() {
+    Screen s(8,5);
+    auto expect = [&](std::string_view firstColumn) {
+        assert((int)firstColumn.size()==s.height);
+        for (int y=0; y<s.height; ++y) assert(s.row(y)[0].ch==(uint32_t)firstColumn[y]);
+    };
+    s.feed("A\r\nB\r\nC\r\nD\r\nE\r\nF\r\nG");
+    expect("CDEFG");
+    s.feed("\033[2;4r\033[4;1H\033D"); expect("CEF G");
+    s.feed("\033[2;1H\033M"); expect("C EFG");
+    s.feed("\033[r\033[H\033M"); expect(" C EF");
+    s.freeze(); s.thaw(); expect(" C EF");
+    s.resize(12,5); expect(" C EF");
+    assert(s.historySize()==2 && s.lineAt(0)[0].ch=='A' && s.lineAt(1)[0].ch=='B');
+    Screen single(8,1); single.feed("A\r\nB\033M");
+    assert(single.historySize()==1 && single.lineAt(0)[0].ch=='A' && single.row(0)[0].ch==' ');
+}
 // Cover multiple blocks, on-disk history, saved alternate contents and incomplete UTF-8.
 static void checkFreeze() {
     Screen s(100,30), reference(100,30);
@@ -144,6 +161,7 @@ static void checkFailureAnchor() {
 int main() {
     setlocale(LC_CTYPE,"en_US.UTF-8");
     checkFreeze();
+    checkScrollOrder();
     checkFailureAnchor();
     checkAgentFrames();
     checkCodeOutput();

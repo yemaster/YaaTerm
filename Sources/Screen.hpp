@@ -25,6 +25,14 @@ struct Cursor {
 };
 struct Buffer {
     std::vector<Row> rows;
+    int firstRow = 0;
+    // Scrolling the whole viewport rotates its origin without moving any rows.
+    int slot(int y) const {
+        int i = firstRow+y, count = (int)rows.size();
+        return i < count ? i : i-count;
+    }
+    Row &row(int y) { return rows[slot(y)]; }
+    const Row &row(int y) const { return rows[slot(y)]; }
     Cursor cursor, saved;
     int top = 0, bottom = 0;
     uint32_t link = 0;

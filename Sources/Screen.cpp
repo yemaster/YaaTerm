@@ -119,7 +119,7 @@ void Screen::resize(int w, int h) {
     if (frozen()) thaw();
     resizeBuffer(active(), w, h);
     cols = w; height = h;
-    if (codePreview.active()) codePreview.resumeRow(active().rows[y()].codeLine);
+    if (codePreview.active()) codePreview.resumeRow(active().row(y()).codeLine);
     updateWriteColumns();
 }
 
@@ -128,6 +128,10 @@ void Screen::resizeBuffer(Buffer &b, int w, int h) {
     int oldWidth = oldHeight ? (int)b.rows.front().size() : 0;
     if (oldHeight == h && oldWidth == w) return;
     ++historyGeneration;
+    if (b.firstRow) {
+        std::rotate(b.rows.begin(),b.rows.begin()+b.firstRow,b.rows.end());
+        b.firstRow = 0;
+    }
     if (&b == &main && oldWidth && oldWidth != w) { reflowMain(w,h); return; }
     int bottom = b.cursor.y;
     if (&b == &main && h < oldHeight)
@@ -227,18 +231,18 @@ const Row &Screen::lineAt(int64_t i) const {
         if (i < (int64_t)history.size()) return history[i];
         i -= history.size();
     }
-    return active().rows[i];
+    return active().row((int)i);
 }
 const Row &Screen::row(int y, int64_t offset) const {
-    if (!offset) return active().rows[y];
+    if (!offset) return active().row(y);
     return lineAt(historySize()-std::clamp<int64_t>(offset,0,historySize())+y);
 }
 
 void Screen::scroll(int first, int last, bool up, bool save) {
     damage(first, last);
-    auto &rows = active().rows;
-    Row spare;
-    bool keep=up && save && !alternate && historyLimit && first==0 && last==height-1;
+    auto &b = active();
+    bool whole = first==0 && last==height-1;
+    bool keep=up && save && !alternate && historyLimit && whole;
     if (!alternate && !keep && failureCell.row>=0) {
         auto y=failureCell.row-historySize();
         if (y>=first && y<=last) {
@@ -246,30 +250,35 @@ void Screen::scroll(int first, int last, bool up, bool save) {
             else failureCell.row+=up ? -1 : 1;
         }
     }
-    if (up) {
-        if (keep) {
-            spare = remember(std::move(rows[first]));
-        } else spare = std::move(rows[first]);
-        std::move(rows.begin() + first + 1, rows.begin() + last + 1, rows.begin() + first);
-        spare.assign(cols, blank()); spare.agentStamp = spare.wrapAt = spare.written = spare.codeLine = 0;
-        rows[last] = std::move(spare);
+    Row &edge = b.row(up ? first : last);
+    Row spare = keep ? remember(std::move(edge)) : std::move(edge);
+    if (whole) {
+        b.firstRow = b.slot(up ? 1 : last);
     } else {
-        spare = std::move(rows[last]);
-        std::move_backward(rows.begin() + first, rows.begin() + last, rows.begin() + last + 1);
-        spare.assign(cols, blank()); spare.agentStamp = spare.wrapAt = spare.written = spare.codeLine = 0;
-        rows[first] = std::move(spare);
+        int begin = b.slot(first), end = b.slot(last);
+        if (begin<=end) {
+            auto from=b.rows.begin()+begin, to=b.rows.begin()+end;
+            if (up) std::move(from+1,to+1,from);
+            else std::move_backward(from,to,to+1);
+        } else if (up) {
+            for (int i=first; i<last; ++i) b.row(i) = std::move(b.row(i+1));
+        } else {
+            for (int i=last; i>first; --i) b.row(i) = std::move(b.row(i-1));
+        }
     }
+    spare.assign(cols, blank()); static_cast<RowMetadata &>(spare) = {};
+    b.row(up ? last : first) = std::move(spare);
 }
 
 void Screen::lineFeed(int wrapAt) {
     auto &b = active();
     if (codePreview.active()) {
-        Row &row = b.rows[b.cursor.y];
+        Row &row = b.row(b.cursor.y);
         codePreview.finishRow(row,wrapAt ? wrapAt : row.written,wrapAt != 0);
         updateWriteColumns();
     }
-    b.rows[b.cursor.y].wrapAt = wrapAt;
-    if (agentStamp && !alternate) b.rows[b.cursor.y].agentStamp = agentStamp;
+    b.row(b.cursor.y).wrapAt = wrapAt;
+    if (agentStamp && !alternate) b.row(b.cursor.y).agentStamp = agentStamp;
     b.cursor.wrapPending = false;
     if (b.cursor.y == b.bottom) scroll(b.top, b.bottom, true, true);
     else b.cursor.y = std::min(b.cursor.y + 1, height - 1);
@@ -286,7 +295,7 @@ void Screen::erase(Row &r, int first, int end) {
 bool Screen::extendEmoji(char32_t ch) {
     auto &b = active();
     auto &cursor = b.cursor;
-    Row &row = b.rows[cursor.y];
+    Row &row = b.row(cursor.y);
     int x = cursor.wrapPending ? cursor.x : cursor.x-1;
     if (x >= 0 && !row[x].width) --x;
     if (x < 0) return false;
@@ -307,7 +316,7 @@ bool Screen::extendEmoji(char32_t ch) {
         erase(row,x,writeColumns);
         lineFeed(x); x = 0;
     }
-    Row &dest = b.rows[cursor.y];
+    Row &dest = b.row(cursor.y);
     erase(dest,x,x+2);
     dest[x] = glyph; dest[x].width = 2;
     dest[x+1] = Cell{glyph.style,0,0,0,(uint32_t)glyph.tag};
@@ -330,8 +339,8 @@ void Screen::put(char32_t ch) {
     }
     if (width == 0) {
         int prev = b.cursor.wrapPending ? b.cursor.x : b.cursor.x - 1;
-        if (prev >= 0 && b.rows[b.cursor.y][prev].width == 0) --prev;
-        if (prev >= 0 && b.rows[b.cursor.y][prev].mark < emoji::firstMark) { b.rows[b.cursor.y][prev].mark = ch; damage(b.cursor.y, b.cursor.y); }
+        if (prev >= 0 && b.row(b.cursor.y)[prev].width == 0) --prev;
+        if (prev >= 0 && b.row(b.cursor.y)[prev].mark < emoji::firstMark) { b.row(b.cursor.y)[prev].mark = ch; damage(b.cursor.y, b.cursor.y); }
         return;
     }
     graphicAdjacent = true;
@@ -344,7 +353,7 @@ void Screen::writeGlyph(char32_t ch, int width, uint32_t mark) {
     }
     if (width + b.cursor.x > writeColumns) width = 1;
     damage(b.cursor.y, b.cursor.y);
-    auto &r = b.rows[b.cursor.y];
+    auto &r = b.row(b.cursor.y);
     if (writingCodeLine || !b.cursor.x || b.cursor.x < r.written) r.codeLine = writingCodeLine;
     if (insert) {
         std::move_backward(r.begin() + b.cursor.x, r.end() - width, r.end());
@@ -526,9 +535,9 @@ void Screen::control(char c) {
         case 'I': case 'Z': moveTabs(n,c=='I'); break;
         case 'b': {
             int x = b.cursor.wrapPending ? b.cursor.x : b.cursor.x-1;
-            if (x>=0 && !b.rows[b.cursor.y][x].width) --x;
+            if (x>=0 && !b.row(b.cursor.y)[x].width) --x;
             if (x>=0) {
-                Cell glyph = b.rows[b.cursor.y][x];
+                Cell glyph = b.row(b.cursor.y)[x];
                 for (int i=0;i<n;++i) writeGlyph(glyph.ch,glyph.width,glyph.mark);
                 graphicAdjacent = true;
             }
@@ -547,14 +556,14 @@ void Screen::control(char c) {
             damage(0, height-1);
             if (a == 3) { clearHistory(); break; }
             for (int i = 0; i < height; ++i) {
-                if (a == 2 || (a == 0 && i > b.cursor.y) || (a == 1 && i < b.cursor.y)) erase(b.rows[i], 0, cols);
-                else if (i == b.cursor.y && a <= 1) erase(b.rows[i], a == 0 ? b.cursor.x : 0, a == 0 ? cols : b.cursor.x+1);
+                if (a == 2 || (a == 0 && i > b.cursor.y) || (a == 1 && i < b.cursor.y)) erase(b.row(i), 0, cols);
+                else if (i == b.cursor.y && a <= 1) erase(b.row(i), a == 0 ? b.cursor.x : 0, a == 0 ? cols : b.cursor.x+1);
             }
             break;
-        case 'K': if (a <= 2) erase(b.rows[b.cursor.y], a == 0 ? b.cursor.x : 0, a == 1 ? b.cursor.x+1 : cols); break;
-        case 'X': erase(b.rows[b.cursor.y], b.cursor.x, std::min(cols,b.cursor.x+n)); break;
+        case 'K': if (a <= 2) erase(b.row(b.cursor.y), a == 0 ? b.cursor.x : 0, a == 1 ? b.cursor.x+1 : cols); break;
+        case 'X': erase(b.row(b.cursor.y), b.cursor.x, std::min(cols,b.cursor.x+n)); break;
         case 'P': case '@': {
-            auto &r = b.rows[b.cursor.y];
+            auto &r = b.row(b.cursor.y);
             n = std::min(n, cols-b.cursor.x);
             if (r.written > b.cursor.x) r.written = c == 'P' ? std::max(b.cursor.x,r.written-n) : std::min(cols,r.written+n);
             if (c == 'P') { std::move(r.begin()+b.cursor.x+n,r.end(),r.begin()+b.cursor.x); erase(r,cols-n,cols); }
@@ -659,7 +668,7 @@ void Screen::finishAgentTurn(bool failed, std::string_view detail) {
 
 void Screen::finishCode() {
     if (!codePreview.active()) return;
-    auto &row = main.rows[main.cursor.y];
+    auto &row = main.row(main.cursor.y);
     if (row.written) codePreview.finishRow(row,row.written,false);
     codePreview = {};
     updateWriteColumns();
@@ -876,7 +885,7 @@ void Screen::feed(std::string_view bytes) {
         if (c>=32 && c<127 && state==Text && !remaining && !insert) {
             auto &buffer = active();
             auto &cursor = buffer.cursor;
-            auto &line = buffer.rows[cursor.y];
+            auto &line = buffer.row(cursor.y);
             // Fresh ASCII runs need no glyph lookup or wide-cell boundary repair.
             if (!cursor.wrapPending && cursor.x>=line.written && cursor.x<writeColumns && cursor.charsets[cursor.shift]=='B') {
                 if (writingCodeLine || !cursor.x) line.codeLine = writingCodeLine;
