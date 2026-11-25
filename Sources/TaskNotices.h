@@ -8,10 +8,11 @@ NSString *AgentNoticeSummary(NSString *reply);
 @property (readonly, weak) TerminalView *source;
 @property (readonly, weak) NSWindow *originWindow;
 @property (readonly) NSString *title, *summary;
-@property (readonly) BOOL unread;
+@property (readonly) BOOL unread, failed;
+@property (readonly) NSTimeInterval timestamp;
 + (NSArray<TaskNotice *> *)recent;
 + (NSUInteger)unreadCount;
-+ (void)postFrom:(TerminalView *)source window:(NSWindow *)window title:(NSString *)title summary:(NSString *)summary;
++ (void)postFrom:(TerminalView *)source window:(NSWindow *)window title:(NSString *)title summary:(NSString *)summary failed:(BOOL)failed;
 + (void)discardFor:(TerminalView *)source;
 - (void)open;
 @end

@@ -238,7 +238,7 @@ static NSSize minPane(NSView *view) {
     NSString *title = [name stringByAppendingString:status ? @" 已结束" : @" 已完成"];
     NSString *summary = status ? [NSString stringWithFormat:@"退出码 %d · 用时 %d 秒",status,seconds]
                                : [NSString stringWithFormat:@"命令执行成功 · 用时 %d 秒",seconds];
-    [TaskNotice postFrom:pane window:self.window title:title summary:summary];
+    [TaskNotice postFrom:pane window:self.window title:title summary:summary failed:status!=0];
 }
 - (TerminalView *)makePane:(NSRect)frame forTab:(TerminalTab *)tab {
     TerminalView *pane = [[TerminalView alloc] initWithFrame:frame];
@@ -257,7 +257,7 @@ static NSSize minPane(NSView *view) {
         if (!t.owner) return;
         NSString *title = [name stringByAppendingString:failed ? @" 任务失败" : @" 任务完成"];
         NSString *summary = AgentNoticeSummary(detail) ?: (failed ? @"回到会话查看错误。" : @"本轮任务已结束，点击查看回复。");
-        [TaskNotice postFrom:v window:t.owner.window title:title summary:summary];
+        [TaskNotice postFrom:v window:t.owner.window title:title summary:summary failed:failed];
     };
     pane.commandExited = ^(TerminalView *v, NSString *name, int status, int seconds) {
         TerminalTab *t = weakTab;

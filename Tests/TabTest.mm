@@ -22,6 +22,11 @@
 - (NSRange)findColumnsInRow:(int)y;
 @end
 
+@interface NoticeListController : NSViewController
+@property (copy) void (^activate)(TaskNotice *);
+- (void)refresh;
+@end
+
 @interface TestKeyView : TerminalView
 @property (copy) NSString *sent;
 @end
@@ -841,10 +846,11 @@ static void checkNoticeEvents() {
     pane.agentFinished(pane,@"codex",NO,@"## 结果\n已修复 `vim` 滚动。");
     assert(TaskNotice.unreadCount==1 && [TaskNotice.recent.firstObject.title isEqual:@"codex 任务完成"]);
     assert([TaskNotice.recent.firstObject.summary containsString:@"已修复 vim 滚动。"]);
+    assert(!TaskNotice.recent.firstObject.failed && TaskNotice.recent.firstObject.timestamp>0);
     [work splitVertical:YES];
     pane.agentFinished(pane,@"claude",YES,@"依赖安装失败。");
     assert(TaskNotice.unreadCount==2 && [TaskNotice.recent.firstObject.title isEqual:@"claude 任务失败"]);
-    assert([TaskNotice.recent.firstObject.summary isEqual:@"依赖安装失败。"]);
+    assert(TaskNotice.recent.firstObject.failed && [TaskNotice.recent.firstObject.summary isEqual:@"依赖安装失败。"]);
     pane.commandExited(pane,@"agy",0,1); // One-shot agent without a separate turn event.
     assert(TaskNotice.unreadCount==3 && TaskNotice.recent.firstObject.source==pane);
     [TaskNotice discardFor:pane];
@@ -881,9 +887,29 @@ static void checkNoticeEvents() {
     [TaskNotice.recent.firstObject open];
     assert(work.focused==pane);
     SetTerminalPreference(CommandNoticesKey,AllCommands);
-    for (int i=0; i<40; ++i) [TaskNotice postFrom:pane window:nil title:@"任务" summary:[@(i) stringValue]];
+    for (int i=0; i<40; ++i) [TaskNotice postFrom:pane window:nil title:@"任务" summary:[@(i) stringValue] failed:NO];
     assert(TaskNotice.recent.count==32 && [TaskNotice.recent.lastObject.summary isEqual:@"8"]);
-    [work stopAll]; assert(!TaskNotice.recent.count);
+    NoticeListController *list=[NoticeListController new];
+    [list refresh];
+    NSTableView *table=[list valueForKey:@"table"];
+    NSScrollView *scroll=table.enclosingScrollView;
+    [scroll layoutSubtreeIfNeeded];
+    assert(table.numberOfRows==32 && NSHeight(scroll.frame)==table.rowHeight*6);
+    TaskNotice *selected=TaskNotice.recent[12];
+    [table selectRowIndexes:[NSIndexSet indexSetWithIndex:12] byExtendingSelection:NO];
+    [scroll.contentView scrollToPoint:NSMakePoint(0,table.rowHeight*10+5)];
+    CGFloat offset=NSMinY(scroll.contentView.bounds);
+    assert(offset>0);
+    [TaskNotice postFrom:pane window:nil title:@"新任务" summary:@"完成" failed:NO];
+    [list refresh];
+    assert(table.selectedRow==13 && NSMinY(scroll.contentView.bounds)==offset+table.rowHeight);
+    __block TaskNotice *opened=nil;
+    list.activate=^(TaskNotice *item){ opened=item; [item open]; };
+    [table keyDown:[NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0
+        timestamp:0 windowNumber:0 context:nil characters:@"\r" charactersIgnoringModifiers:@"\r" isARepeat:NO keyCode:36]];
+    assert(opened==selected && !selected.unread);
+    [work stopAll]; [list refresh];
+    assert(!TaskNotice.recent.count && !table.numberOfRows && scroll.hidden && ![[list valueForKey:@"empty"] isHidden]);
 }
 static void checkTransfers() {
     TabWorkspace *source = [[TabWorkspace alloc] initWithFrame:NSMakeRect(0,0,800,500)];
@@ -916,8 +942,14 @@ static void checkTransfers() {
     [presenter show:notice inContent:target top:NSHeight(target.bounds)];
     NSButton *banner = [presenter valueForKey:@"banner"];
     assert(banner.superview == target && [banner.accessibilityLabel containsString:@"claude"]);
+    NSTimer *timer=[presenter valueForKey:@"dismissal"];
+    [presenter show:notice inContent:target top:NSHeight(target.bounds)];
+    assert(!timer.valid && [presenter valueForKey:@"banner"]==banner);
+    NSTableCellView *cell=(NSTableCellView *)banner.subviews.firstObject;
+    [banner layoutSubtreeIfNeeded];
+    assert(cell.imageView.image && [cell.textField.stringValue isEqual:notice.title]);
     applyControl(banner);
-    assert(!banner.superview);
+    assert(!banner.superview && ![presenter valueForKey:@"dismissal"]);
     assert(target.selectedIndex==1 && target.focused==left && !target.showingSettings && !TaskNotice.unreadCount);
     exitShell(right); waitUntil(^BOOL{ return target.focused==left; });
     [target selectIndex:0]; assert(target.focused==original);

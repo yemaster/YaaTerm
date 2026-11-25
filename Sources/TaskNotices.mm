@@ -49,10 +49,11 @@ static TaskNotice *pendingBanner;
     for (TaskNotice *item in inbox) if (item.unread) ++count;
     return count;
 }
-+ (void)postFrom:(TerminalView *)source window:(NSWindow *)window title:(NSString *)title summary:(NSString *)summary {
++ (void)postFrom:(TerminalView *)source window:(NSWindow *)window title:(NSString *)title summary:(NSString *)summary failed:(BOOL)failed {
     if (!inbox) inbox = [NSMutableArray arrayWithCapacity:32];
     TaskNotice *item = [TaskNotice new];
     item->_source = source; item->_originWindow = window;
+    item->_failed = failed; item->_timestamp = NSDate.timeIntervalSinceReferenceDate;
     item->_title = [title copy]; item->_summary = [summary copy]; item->_unread = YES;
     if (inbox.count == 32) [inbox removeLastObject];
     [inbox insertObject:item atIndex:0];
@@ -72,6 +73,7 @@ static TaskNotice *pendingBanner;
         if (inbox[i].source != source && inbox[i].source) continue;
         [inbox removeObjectAtIndex:i]; changed = YES;
     }
+    if (!inbox.count) inbox=nil;
     if (changed) [NSNotificationCenter.defaultCenter postNotificationName:TaskNoticesChanged object:nil];
 }
 - (void)open {
@@ -85,37 +87,127 @@ static TaskNotice *pendingBanner;
 }
 @end
 
-@interface NoticeRow : NSButton
-@property (nonatomic) TaskNotice *notice;
-@property BOOL banner;
+static constexpr CGFloat noticeWidth = 336, rowHeight = 54;
+static NSTextField *noticeLabel(CGFloat size, NSFontWeight weight, NSColor *color) {
+    NSTextField *label = [NSTextField labelWithString:@""];
+    label.font = [NSFont systemFontOfSize:size weight:weight]; label.textColor = color;
+    label.usesSingleLineMode = YES; label.lineBreakMode = NSLineBreakByTruncatingTail;
+    return label;
+}
+
+// Identical typography for the transient banner and reusable inbox rows.
+@interface NoticeCell : NSTableCellView
+- (instancetype)initForBanner:(BOOL)banner;
+- (void)display:(TaskNotice *)item time:(NSString *)time;
 @end
-@implementation NoticeRow
-- (instancetype)initWithFrame:(NSRect)frame {
-    if ((self = [super initWithFrame:frame])) { self.bordered = NO; self.title = @""; }
+@implementation NoticeCell {
+    NSTextField *_summary, *_time;
+    BOOL _unread;
+}
+- (instancetype)initForBanner:(BOOL)banner {
+    if ((self=[super initWithFrame:NSZeroRect])) {
+        NSImageView *icon = [NSImageView new];
+        icon.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:banner ? 22 : 17 weight:NSFontWeightMedium];
+        [self addSubview:icon]; self.imageView=icon;
+        NSTextField *title = noticeLabel(13,NSFontWeightSemibold,NSColor.labelColor);
+        [self addSubview:title]; self.textField=title;
+        _summary = noticeLabel(12,NSFontWeightRegular,NSColor.secondaryLabelColor);
+        [self addSubview:_summary];
+        if (!banner) {
+            _time = noticeLabel(11,NSFontWeightRegular,NSColor.secondaryLabelColor);
+            _time.alignment = NSTextAlignmentRight; [self addSubview:_time];
+        }
+    }
     return self;
 }
 - (BOOL)isFlipped { return YES; }
-- (void)setNotice:(TaskNotice *)notice {
-    _notice = notice;
-    [self setAccessibilityLabel:[NSString stringWithFormat:@"%@，%@",notice.title,notice.summary]];
-    self.toolTip = notice.summary;
+- (void)display:(TaskNotice *)item time:(NSString *)time {
+    _unread = item.unread;
+    self.textField.stringValue = item.title; _summary.stringValue = item.summary;
+    self.textField.font = [NSFont systemFontOfSize:13 weight:(!_time || _unread) ? NSFontWeightSemibold : NSFontWeightRegular];
+    self.imageView.image = [NSImage imageWithSystemSymbolName:item.failed ? @"exclamationmark.circle" : @"checkmark.circle"
+                                    accessibilityDescription:nil];
+    self.imageView.contentTintColor = item.failed ? NSColor.systemOrangeColor : (_time ? NSColor.secondaryLabelColor : NSColor.systemGreenColor);
+    if (_time) {
+        _time.stringValue=time;
+        [_time sizeToFit];
+        [self setAccessibilityLabel:[NSString stringWithFormat:@"%@，%@，%@，%@",_unread ? @"未读" : @"已读",item.title,item.summary,_time.stringValue]];
+    }
+    self.toolTip = item.summary; self.needsLayout = YES; self.needsDisplay = YES;
+}
+- (void)layout {
+    [super layout];
+    CGFloat w=NSWidth(self.bounds), h=NSHeight(self.bounds), icon=_time ? 20 : 26;
+    CGFloat lead=_time ? 5 : 14, textX=lead+icon+10, right=w-(_time ? 6 : 14);
+    self.imageView.frame=NSMakeRect(lead,floor((h-icon)/2),icon,icon);
+    CGFloat titleRight=right;
+    if (_time) {
+        CGFloat timeWidth=NSWidth(_time.frame);
+        _time.frame=NSMakeRect(right-timeWidth,floor(h/2)-18,timeWidth,16);
+        titleRight=NSMinX(_time.frame)-(_unread ? 18 : 8);
+    }
+    self.textField.frame=NSMakeRect(textX,floor(h/2)-18,MAX(0.,titleRight-textX),18);
+    _summary.frame=NSMakeRect(textX,floor(h/2)+2,MAX(0.,right-textX),17);
 }
 - (void)drawRect:(NSRect)dirty {
-    const auto &colors = CurrentInterfacePalette();
-    NSRect bounds = self.bounds;
-    if (_banner || self.highlighted) {
-        NSBezierPath *box = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(bounds,.5,.5) xRadius:10 yRadius:10];
-        [colors.chrome setFill]; [box fill];
-        [colors.separator setStroke]; box.lineWidth = 1; [box stroke];
+    [super drawRect:dirty];
+    if (_time && _unread) {
+        [NSColor.controlAccentColor setFill];
+        [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(NSMinX(_time.frame)-10,NSMidY(_time.frame)-2.5,5,5)] fill];
     }
-    if (_notice.unread) {
-        [colors.accent setFill]; [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(11,15,6,6)] fill];
+}
+@end
+
+@interface NoticeBanner : NSButton
+@property (nonatomic) TaskNotice *notice;
+@end
+@implementation NoticeBanner {
+    NoticeCell *_content;
+}
+- (instancetype)initWithFrame:(NSRect)frame {
+    if ((self=[super initWithFrame:frame])) {
+        self.bordered=NO; self.title=@""; self.wantsLayer=YES;
+        _content=[[NoticeCell alloc] initForBanner:YES]; _content.frame=self.bounds;
+        _content.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
+        [_content setAccessibilityElement:NO]; [self addSubview:_content];
+        [self setAccessibilityChildren:@[]];
     }
-    static NSMutableParagraphStyle *style;
-    if (!style) { style = [NSMutableParagraphStyle new]; style.lineBreakMode = NSLineBreakByTruncatingTail; }
-    CGFloat width = MAX(1.,NSWidth(bounds)-35);
-    [_notice.title drawInRect:NSMakeRect(23,7,width,20) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:colors.text,NSParagraphStyleAttributeName:style}];
-    [_notice.summary drawInRect:NSMakeRect(23,27,width,18) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:12],NSForegroundColorAttributeName:colors.secondaryText,NSParagraphStyleAttributeName:style}];
+    return self;
+}
+- (void)setNotice:(TaskNotice *)notice {
+    _notice=notice; [_content display:notice time:nil];
+    [self setAccessibilityLabel:[NSString stringWithFormat:@"%@，%@",notice.title,notice.summary]];
+    self.toolTip=notice.summary;
+}
+- (void)resizeWithOldSuperviewSize:(NSSize)oldSize {
+    [super resizeWithOldSuperviewSize:oldSize];
+    NSRect frame=self.frame, bounds=self.superview.bounds;
+    frame.size.width=MIN(noticeWidth,MAX(0.,NSWidth(bounds)-24));
+    frame.origin.x=NSMaxX(bounds)-frame.size.width-12;
+    self.frame=frame;
+}
+- (NSView *)hitTest:(NSPoint)point { return [super hitTest:point] ? self : nil; }
+- (BOOL)wantsUpdateLayer { return YES; }
+- (void)updateLayer {
+    CALayer *layer=self.layer;
+    layer.cornerRadius=14; layer.cornerCurve=kCACornerCurveContinuous;
+    layer.backgroundColor=(self.highlighted ? NSColor.controlBackgroundColor : NSColor.windowBackgroundColor).CGColor;
+    layer.borderColor=NSColor.separatorColor.CGColor; layer.borderWidth=1./(self.window.backingScaleFactor ?: 1.);
+    layer.shadowColor=NSColor.blackColor.CGColor; layer.shadowOpacity=.16; layer.shadowRadius=5; layer.shadowOffset=CGSizeMake(0,-2);
+    CGPathRef path=CGPathCreateWithRoundedRect(NSRectToCGRect(self.bounds),14,14,nil);
+    layer.shadowPath=path; CGPathRelease(path);
+}
+@end
+
+@interface NoticeTable : NSTableView
+@end
+@implementation NoticeTable
+- (void)keyDown:(NSEvent *)event {
+    if (!(event.modifierFlags & (NSEventModifierFlagCommand|NSEventModifierFlagOption|NSEventModifierFlagControl)) &&
+        self.selectedRow>=0 && (event.keyCode==36 || event.keyCode==76 || event.keyCode==49)) {
+        [NSApp sendAction:self.doubleAction to:self.target from:self]; return;
+    }
+    [super keyDown:event];
 }
 @end
 
@@ -125,79 +217,137 @@ static TaskNotice *pendingBanner;
 - (BOOL)isFlipped { return YES; }
 @end
 
+@interface NoticeListController : NSViewController <NSTableViewDelegate,NSTableViewDataSource>
+@property (copy) void (^activate)(TaskNotice *);
+- (void)refresh;
+@end
+@implementation NoticeListController {
+    NSArray<TaskNotice *> *_items;
+    NoticeTable *_table;
+    NSScrollView *_scroll;
+    NSTextField *_empty;
+    NSDateFormatter *_clock;
+}
+- (void)loadView {
+    NoticeList *root=[[NoticeList alloc] initWithFrame:NSMakeRect(0,0,noticeWidth,94)];
+    NSTextField *heading=noticeLabel(15,NSFontWeightSemibold,NSColor.labelColor);
+    heading.stringValue=@"通知"; heading.frame=NSMakeRect(16,13,noticeWidth-32,21);
+    [root addSubview:heading];
+    NSBox *rule=[NSBox new]; rule.boxType=NSBoxSeparator; rule.frame=NSMakeRect(14,42,noticeWidth-28,1); [root addSubview:rule];
+    _empty=noticeLabel(13,NSFontWeightRegular,NSColor.secondaryLabelColor);
+    _empty.stringValue=@"暂无通知"; _empty.alignment=NSTextAlignmentCenter;
+    _empty.frame=NSMakeRect(16,59,noticeWidth-32,20); [root addSubview:_empty];
+    _scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(4,46,noticeWidth-8,rowHeight)];
+    _scroll.hasVerticalScroller=YES; _scroll.autohidesScrollers=YES; _scroll.drawsBackground=NO;
+    _table=[[NoticeTable alloc] initWithFrame:_scroll.bounds]; _table.headerView=nil;
+    _table.style=NSTableViewStyleInset; _table.backgroundColor=NSColor.clearColor;
+    _table.rowHeight=rowHeight; _table.intercellSpacing=NSZeroSize;
+    NSTableColumn *column=[[NSTableColumn alloc] initWithIdentifier:@"notice"];
+    column.resizingMask=NSTableColumnAutoresizingMask; [_table addTableColumn:column];
+    _table.dataSource=self; _table.delegate=self; _table.target=self;
+    _table.action=@selector(openClicked:); _table.doubleAction=@selector(openSelected:);
+    [_table setAccessibilityLabel:@"任务通知"]; _scroll.documentView=_table; [root addSubview:_scroll];
+    self.view=root;
+}
+- (void)refresh {
+    NSView *root=self.view;
+    NSClipView *clip=_scroll.contentView;
+    NSPoint offset=clip.bounds.origin;
+    NSInteger first=[_table rowAtPoint:offset], selected=_table.selectedRow;
+    TaskNotice *anchor=(offset.y>0 && first>=0 && first<(NSInteger)_items.count) ? _items[first] : nil;
+    CGFloat inset=anchor ? offset.y-NSMinY([_table rectOfRow:first]) : 0;
+    TaskNotice *selection=selected>=0 && selected<(NSInteger)_items.count ? _items[selected] : nil;
+    _items=TaskNotice.recent;
+    CGFloat height=MIN(_items.count,(NSUInteger)6)*rowHeight;
+    _scroll.hidden=!_items.count; _empty.hidden=_items.count!=0;
+    [_scroll setFrameSize:NSMakeSize(noticeWidth-8,height)];
+    root.frame=NSMakeRect(0,0,noticeWidth,height ? 52+height : 94);
+    self.preferredContentSize=root.frame.size;
+    [_table reloadData]; [_table sizeLastColumnToFit];
+    NSUInteger index=selection ? [_items indexOfObjectIdenticalTo:selection] : NSNotFound;
+    if (index==NSNotFound) [_table deselectAll:nil];
+    else [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:index] byExtendingSelection:NO];
+    NSUInteger row=anchor ? [_items indexOfObjectIdenticalTo:anchor] : NSNotFound;
+    [clip scrollToPoint:NSMakePoint(0,row==NSNotFound ? 0 : NSMinY([_table rectOfRow:row])+inset)];
+    [_scroll reflectScrolledClipView:clip];
+}
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)table { return _items.count; }
+- (NSView *)tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
+    NoticeCell *cell=[table makeViewWithIdentifier:column.identifier owner:self];
+    if (!cell) { cell=[[NoticeCell alloc] initForBanner:NO]; cell.identifier=column.identifier; }
+    if (!_clock) {
+        _clock=[NSDateFormatter new]; _clock.locale=NSLocale.autoupdatingCurrentLocale;
+        _clock.timeStyle=NSDateFormatterShortStyle;
+    }
+    TaskNotice *item=_items[row];
+    [cell display:item time:[_clock stringFromDate:[NSDate dateWithTimeIntervalSinceReferenceDate:item.timestamp]]];
+    return cell;
+}
+- (void)openRow:(NSInteger)row { if (row>=0 && row<(NSInteger)_items.count && _activate) _activate(_items[row]); }
+- (void)openClicked:(NSTableView *)table { [self openRow:table.clickedRow]; }
+- (void)openSelected:(NSTableView *)table { [self openRow:table.selectedRow]; }
+@end
+
 @interface TaskNoticePresenter () <NSPopoverDelegate>
 @end
 @implementation TaskNoticePresenter {
     NSPopover *_popover;
-    NoticeRow *_banner;
+    NoticeBanner *_banner;
     NSTimer *_dismissal;
 }
 - (void)dismissBanner {
-    [_dismissal invalidate]; _dismissal = nil;
-    [_banner removeFromSuperview]; _banner = nil;
+    [_dismissal invalidate]; _dismissal=nil;
+    [_banner removeFromSuperview]; _banner=nil;
 }
 - (void)dealloc { [_dismissal invalidate]; [_banner removeFromSuperview]; [_popover close]; }
-- (void)activate:(NoticeRow *)row {
-    TaskNotice *item = row.notice;
-    [_popover close]; [self dismissBanner]; [item open];
+- (void)activateBanner:(NoticeBanner *)sender {
+    TaskNotice *item=sender.notice; [self dismissBanner]; [item open];
 }
 - (void)show:(TaskNotice *)notice inContent:(NSView *)content top:(CGFloat)top {
     if (!content || _popover.shown) return;
-    [self dismissBanner];
-    CGFloat width = MIN(310.,NSWidth(content.bounds)-20);
-    _banner = [[NoticeRow alloc] initWithFrame:NSMakeRect(NSWidth(content.bounds)-width-10,top-62,width,52)];
-    _banner.banner = YES; _banner.notice = notice; _banner.target = self; _banner.action = @selector(activate:);
-    _banner.autoresizingMask = NSViewMinXMargin|NSViewMinYMargin;
-    [content addSubview:_banner positioned:NSWindowAbove relativeTo:nil];
-    if (TabAnimationsEnabled()) {
-        _banner.wantsLayer = YES;
-        CABasicAnimation *appear = [CABasicAnimation animationWithKeyPath:@"opacity"];
-        appear.fromValue = @0; appear.toValue = @1; appear.duration = .14;
-        [_banner.layer addAnimation:appear forKey:@"appear"];
+    CGFloat width=MIN(noticeWidth,NSWidth(content.bounds)-24);
+    if (width<=0) return;
+    NSRect frame=NSMakeRect(NSMaxX(content.bounds)-width-12,top-72,width,60);
+    if (_banner.superview!=content) {
+        [self dismissBanner];
+        _banner=[[NoticeBanner alloc] initWithFrame:frame];
+        _banner.autoresizingMask=NSViewMinXMargin|NSViewMinYMargin;
+        _banner.target=self; _banner.action=@selector(activateBanner:);
+        [content addSubview:_banner positioned:NSWindowAbove relativeTo:nil];
+        if (TabAnimationsEnabled()) {
+            CABasicAnimation *appear=[CABasicAnimation animationWithKeyPath:@"opacity"];
+            appear.fromValue=@0; appear.toValue=@1; appear.duration=.14;
+            [_banner.layer addAnimation:appear forKey:@"appear"];
+        }
     }
-    __weak TaskNoticePresenter *weak = self;
-    _dismissal = [NSTimer scheduledTimerWithTimeInterval:4.5 repeats:NO block:^(NSTimer *timer){ [weak dismissBanner]; }];
+    _banner.frame=frame; _banner.appearance=SchemeAppearance(PreferredColorScheme()); _banner.notice=notice;
+    [_dismissal invalidate];
+    __weak TaskNoticePresenter *weak=self;
+    _dismissal=[NSTimer scheduledTimerWithTimeInterval:4.5 repeats:NO block:^(NSTimer *){ [weak dismissBanner]; }];
+    _dismissal.tolerance=.25;
     NSAccessibilityPostNotificationWithUserInfo(content,NSAccessibilityAnnouncementRequestedNotification,
         @{NSAccessibilityAnnouncementKey:_banner.accessibilityLabel,NSAccessibilityPriorityKey:@(NSAccessibilityPriorityMedium)});
 }
 - (void)toggleFrom:(NSButton *)bell {
     if (_popover.shown) { [_popover close]; return; }
     [self dismissBanner];
-    _popover = [NSPopover new]; _popover.delegate = self; _popover.behavior = NSPopoverBehaviorTransient;
-    _popover.animates = TabAnimationsEnabled();
-    _popover.contentViewController = [NSViewController new];
-    [self populate];
+    NoticeListController *list=[NoticeListController new];
+    __weak TaskNoticePresenter *weak=self;
+    list.activate=^(TaskNotice *item){ TaskNoticePresenter *owner=weak; if (owner) [owner->_popover close]; [item open]; };
+    _popover=[NSPopover new]; _popover.delegate=self; _popover.behavior=NSPopoverBehaviorTransient;
+    _popover.animates=TabAnimationsEnabled(); _popover.appearance=SchemeAppearance(PreferredColorScheme());
+    _popover.contentViewController=list; [list refresh]; _popover.contentSize=list.preferredContentSize;
     [_popover showRelativeToRect:bell.bounds ofView:bell preferredEdge:NSMinYEdge];
 }
-- (void)popoverDidClose:(NSNotification *)note { if (note.object == _popover) _popover = nil; }
+- (void)popoverDidClose:(NSNotification *)note { if (note.object==_popover) _popover=nil; }
 - (void)refresh {
-    _banner.needsDisplay = YES;
-    if (_banner && (!_banner.notice.unread || ![TaskNotice.recent containsObject:_banner.notice])) [self dismissBanner];
-    if (_popover.shown) [self populate];
-}
-- (void)populate {
-    NSArray<TaskNotice *> *items = TaskNotice.recent;
-    CGFloat width = 316, height = items.count ? MIN((CGFloat)items.count*52,312.) : 42;
-    NoticeList *root = [[NoticeList alloc] initWithFrame:NSMakeRect(0,0,width,height+40)];
-    NSTextField *heading = [NSTextField labelWithString:@"通知"];
-    heading.font = [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold]; heading.frame = NSMakeRect(14,11,width-28,22);
-    [root addSubview:heading];
-    if (items.count) {
-        NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(4,38,width-8,height)];
-        scroll.hasVerticalScroller = YES; scroll.autohidesScrollers = YES; scroll.drawsBackground = NO;
-        NoticeList *list = [[NoticeList alloc] initWithFrame:NSMakeRect(0,0,scroll.contentSize.width,items.count*52)];
-        NSInteger i=0;
-        for (TaskNotice *item in items) {
-            NoticeRow *row = [[NoticeRow alloc] initWithFrame:NSMakeRect(0,i++*52,NSWidth(list.bounds),52)];
-            row.notice = item; row.target = self; row.action = @selector(activate:); [list addSubview:row];
-        }
-        scroll.documentView = list; [root addSubview:scroll];
-    } else {
-        NSTextField *empty = [NSTextField labelWithString:@"暂无任务提醒"];
-        empty.textColor = NSColor.secondaryLabelColor; empty.frame = NSMakeRect(14,42,width-28,20);
-        [root addSubview:empty];
+    if (_banner) {
+        if (!_banner.notice.unread || ![inbox containsObject:_banner.notice]) [self dismissBanner];
+        else { _banner.appearance=SchemeAppearance(PreferredColorScheme()); _banner.needsDisplay=YES; }
     }
-    root.appearance = SchemeAppearance(PreferredColorScheme());
-    _popover.contentViewController.view = root; _popover.contentSize = root.bounds.size;
+    if (_popover.shown) {
+        NoticeListController *list=(NoticeListController *)_popover.contentViewController;
+        [list refresh]; _popover.appearance=SchemeAppearance(PreferredColorScheme()); _popover.contentSize=list.preferredContentSize;
+    }
 }
 @end

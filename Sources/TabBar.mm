@@ -249,7 +249,7 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
             b.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:12 weight:NSFontWeightMedium];
             [self addSubview:b];
         }
-        _settings.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:14 weight:NSFontWeightRegular];
+        _bell.symbolConfiguration = _settings.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:14 weight:NSFontWeightRegular];
         [self agentPreference:nil];
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(agentPreference:) name:TerminalPreferenceChanged object:BuiltInAgent];
         [self updateBell];
@@ -435,8 +435,11 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
 - (void)updateBell {
     NSUInteger count = TaskNotice.unreadCount;
     NSString *label = count ? [NSString stringWithFormat:@"通知，%lu 条未读",(unsigned long)count] : @"通知";
-    _bell.image = [NSImage imageWithSystemSymbolName:count ? @"bell.badge.fill" : @"bell" accessibilityDescription:nil];
-    _bell.contentTintColor = count ? CurrentInterfacePalette().accent : CurrentInterfacePalette().secondaryText;
+    _bell.image = [NSImage imageWithSystemSymbolName:count ? @"bell.badge" : @"bell" accessibilityDescription:nil];
+    _bell.contentTintColor = CurrentInterfacePalette().secondaryText;
+    NSImageSymbolConfiguration *size = _settings.symbolConfiguration;
+    _bell.symbolConfiguration = count ? [size configurationByApplyingConfiguration:
+        [NSImageSymbolConfiguration configurationWithPaletteColors:@[NSColor.controlAccentColor,CurrentInterfacePalette().secondaryText]]] : size;
     [_bell setAccessibilityLabel:label]; _bell.toolTip = label;
 }
 - (void)showNotices:(id)sender {
