@@ -4,6 +4,7 @@
 @property (copy) void (^onData)(const void *, size_t);
 @property (copy) void (^onExit)(void);
 @property (nonatomic) BOOL tracksCommands;
+@property (nonatomic) BOOL codeOutputEnabled;
 @property (readonly) NSString *agentInputID;
 - (BOOL)beginAgentInputWithColor:(NSInteger)color directoryColor:(NSInteger)directoryColor ready:(void (^)(BOOL))ready;
 - (void)updateAgentPromptColor:(NSInteger)color directoryColor:(NSInteger)directoryColor wakeEditor:(BOOL)wake;

@@ -5,6 +5,10 @@
 namespace yaa {
 constexpr int32_t Default = -1;
 constexpr int32_t Indexed = 1 << 24;
+// Presentation colors sit above the 256 ANSI entries and never come from SGR.
+constexpr int32_t CodeColor = Indexed + 256;
+constexpr int32_t CodeMuted = CodeColor + 8;
+constexpr uint32_t ContinuedCodeLine = (1u << 27)-1;
 enum Attribute : uint8_t { Bold = 1, Underline = 2, Inverse = 4, Italic = 8 };
 struct Style {
     // A color is either RGB, a palette index, or the default sentinel.
@@ -24,12 +28,16 @@ struct Cell {
         : style(s), ch(c), mark(m), tag(reference), width(w) {}
 };
 static_assert(sizeof(Cell) == 16);
-struct Row : std::vector<Cell> {
+struct RowMetadata {
+    int written : 11;          // Includes trailing spaces. The grid is at most 1000 columns.
+    unsigned wrapAt : 10;      // Nonzero when the next row continues this one.
+    uint64_t agentStamp : 16;  // Block ID and output/echo bit.
+    uint64_t codeLine : 27;    // Display only. Never changes the source cells.
+    constexpr RowMetadata() : written(0), wrapAt(0), agentStamp(0), codeLine(0) {}
+};
+static_assert(sizeof(RowMetadata) == 8);
+struct Row : std::vector<Cell>, RowMetadata {
     using std::vector<Cell>::vector;
-    // Nonzero when the next row continues this one. A wide glyph can wrap one column early.
-    uint16_t wrapAt = 0; // Screen width is limited to 1000 columns.
-    uint16_t agentStamp = 0; // Nonzero block ID in the upper bits, output (vs. echo) in bit zero.
-    int written = 0; // Includes explicit trailing spaces, excludes untouched padding.
     int used() const {
         int n = (int)size();
         while (n > written && (*this)[n-1].ch == U' ' && !(*this)[n-1].mark && (*this)[n-1].style == Style{}) --n;

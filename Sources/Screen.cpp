@@ -170,11 +170,12 @@ void Screen::reflowMain(int w, int h) {
             else out = std::move(visible.front());
             visible.pop_front();
         }
-        out.assign(w,Cell{}); out.wrapAt = out.written = 0; filled = 0;
+        out.assign(w,Cell{}); out.wrapAt = out.written = out.codeLine = 0; filled = 0;
     };
     for (int y=0; y<=last; ++y) {
         const Row &src = b.rows[y];
         out.agentStamp = src.agentStamp;
+        if (!filled) out.codeLine = src.codeLine;
         int end = src.wrapAt ? src.wrapAt : src.used();
         auto insertion = [&](const Cursor &c) { return c.x + (c.wrapPending ? 1 : 0); };
         if (b.cursor.y == y) end = std::max(end,insertion(b.cursor));
@@ -191,7 +192,10 @@ void Screen::reflowMain(int w, int h) {
         };
         for (int x=0; x<end;) {
             int width = src[x].width == 2 && x+1<end ? 2 : 1;
-            if (filled+width > w) { emit(true); out.agentStamp = src.agentStamp; }
+            if (filled+width > w) {
+                emit(true); out.agentStamp = src.agentStamp;
+                if (src.codeLine) out.codeLine = ContinuedCodeLine;
+            }
             place(x); out[filled++] = src[x++];
             if (width == 2) { place(x); out[filled++] = src[x++]; }
         }
@@ -244,18 +248,22 @@ void Screen::scroll(int first, int last, bool up, bool save) {
             spare = remember(std::move(rows[first]));
         } else spare = std::move(rows[first]);
         std::move(rows.begin() + first + 1, rows.begin() + last + 1, rows.begin() + first);
-        spare.assign(cols, blank()); spare.agentStamp = spare.wrapAt = spare.written = 0;
+        spare.assign(cols, blank()); spare.agentStamp = spare.wrapAt = spare.written = spare.codeLine = 0;
         rows[last] = std::move(spare);
     } else {
         spare = std::move(rows[last]);
         std::move_backward(rows.begin() + first, rows.begin() + last, rows.begin() + last + 1);
-        spare.assign(cols, blank()); spare.agentStamp = spare.wrapAt = spare.written = 0;
+        spare.assign(cols, blank()); spare.agentStamp = spare.wrapAt = spare.written = spare.codeLine = 0;
         rows[first] = std::move(spare);
     }
 }
 
 void Screen::lineFeed(int wrapAt) {
     auto &b = active();
+    if (codePreview.active()) {
+        Row &row = b.rows[b.cursor.y];
+        codePreview.finishRow(row,wrapAt ? wrapAt : row.written,wrapAt != 0);
+    }
     b.rows[b.cursor.y].wrapAt = wrapAt;
     if (agentStamp && !alternate) b.rows[b.cursor.y].agentStamp = agentStamp;
     b.cursor.wrapPending = false;
@@ -265,7 +273,7 @@ void Screen::lineFeed(int wrapAt) {
 void Screen::erase(Row &r, int first, int end) {
     if (first >= end) return;
     if (end == cols) r.wrapAt = 0;
-    if (first == 0 && end == cols) r.agentStamp = 0;
+    if (first == 0 && end == cols) { r.agentStamp = 0; r.codeLine = 0; }
     if (first > 0 && r[first].width == 0) --first;
     if (end < cols && r[end].width == 0) ++end;
     if (end >= r.written) r.written = std::min(r.written,first);
@@ -332,6 +340,7 @@ void Screen::writeGlyph(char32_t ch, int width, uint32_t mark) {
     if (width + b.cursor.x > cols) width = 1;
     damage(b.cursor.y, b.cursor.y);
     auto &r = b.rows[b.cursor.y];
+    if (!b.cursor.x) r.codeLine = 0;
     if (insert) {
         std::move_backward(r.begin() + b.cursor.x, r.end() - width, r.end());
         if (r.written > b.cursor.x) r.written = std::min(cols,r.written+width);
@@ -395,6 +404,7 @@ void Screen::mode(int n, bool on, bool priv) {
         case 2004: bracketPaste = on; break;
         case 47: case 1047: case 1049:
             if (on == alternate) break;
+            finishCode();
             if (on && n == 1049) {
                 main.saved = main.cursor;
                 alt = Buffer{};
@@ -641,6 +651,13 @@ void Screen::finishAgentTurn(bool failed, std::string_view detail) {
     if (agentFinished) agentFinished(agentCommand,failed,detail);
 }
 
+void Screen::finishCode() {
+    if (!codePreview.active()) return;
+    auto &row = main.rows[main.cursor.y];
+    if (row.written) codePreview.finishRow(row,row.written,false);
+    codePreview = {};
+}
+
 void Screen::finishOSC() {
     state = Text;
     std::string_view data(sequence);
@@ -710,6 +727,7 @@ void Screen::finishOSC() {
             return;
         }
         if (event=="yaaterm-end") {
+            finishCode();
             auto status = take(';');
             if (status.empty()) return;
             int value = 0;
@@ -726,6 +744,8 @@ void Screen::finishOSC() {
         }
         if (event == "yaaterm-context") {
             auto kind = take(';');
+            finishCode();
+            if (showCode && !alternate) codePreview.begin(kind);
             if (!alternate && outputContext) {
                 context = outputContext(kind,data);
                 active().link = 0; writeTag = context;
@@ -782,6 +802,7 @@ void Screen::byte(uint8_t c) {
     }
     if (c == 27) { graphicAdjacent = false; state = Escape; return; }
     if (c < 32) {
+        if (!c && codePreview.active()) codePreview = {};
         graphicAdjacent = false;
         if (c == 13) { b.cursor.x = 0; b.cursor.wrapPending = false; }
         else if (c == 10 || c == 11 || c == 12) lineFeed();
@@ -852,6 +873,7 @@ void Screen::feed(std::string_view bytes) {
                     c = bytes[pos];
                 } while (c>=32 && c<127);
                 line.written = cursor.x;
+                line.codeLine = 0;
                 line.agentStamp = alternate ? 0 : agentStamp;
                 if (cursor.x==cols) { cursor.wrapPending = true; --cursor.x; }
                 graphicAdjacent = true;

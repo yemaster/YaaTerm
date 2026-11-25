@@ -26,7 +26,7 @@
     BOOL _tracksCommands, _directoryCreated;
 }
 - (instancetype)init {
-    if ((self = [super init])) { _fd = -1; _tracksCommands=YES; }
+    if ((self = [super init])) { _fd = -1; _tracksCommands=YES; _codeOutputEnabled=YES; }
     return self;
 }
 - (NSString *)shellName { return _shellName; }
@@ -48,6 +48,7 @@
             _commandExitToken = NSUUID.UUID.UUIDString;
             _controlDirectory=[NSTemporaryDirectory() stringByAppendingPathComponent:[@"yaaterm-" stringByAppendingString:NSUUID.UUID.UUIDString]];
             env[@"YAATERM_COMMAND_DIR"]=_controlDirectory;
+            if (!_codeOutputEnabled) [self updateCodeOutputFlag];
             [self setTracksCommands:_tracksCommands];
             env[@"YAATERM_EXIT_TOKEN"] = _commandExitToken;
             env[@"YAATERM_ORIGINAL_ZDOTDIR"] = env[@"ZDOTDIR"];
@@ -161,6 +162,19 @@
     return _fd >= 0 && _pid > 0 && !_pending && tcgetpgrp(_fd) == _pid;
 }
 - (BOOL)tracksCommands { return _tracksCommands; }
+- (void)updateCodeOutputFlag {
+    if (!_controlDirectory) return;
+    NSString *path = [_controlDirectory stringByAppendingString:@".no-code"];
+    if (_codeOutputEnabled) unlink(path.fileSystemRepresentation);
+    else {
+        int fd = open(path.fileSystemRepresentation,O_CREAT|O_EXCL|O_WRONLY|O_CLOEXEC,0600);
+        if (fd >= 0) close(fd);
+    }
+}
+- (void)setCodeOutputEnabled:(BOOL)enabled {
+    if (_codeOutputEnabled == enabled) return;
+    _codeOutputEnabled = enabled; [self updateCodeOutputFlag];
+}
 - (void)wakeEditor {
     static const char key[]="\033[99;7~";
     [self sendBytes:key length:sizeof(key)-1];
@@ -304,6 +318,7 @@ static NSString *transcriptText(NSString *text) {
     [self endAgentInput:NO];
     [self discardPendingLine];
     if (_directoryCreated) { rmdir(_controlDirectory.fileSystemRepresentation); _directoryCreated=NO; }
+    if (_controlDirectory && !_codeOutputEnabled) unlink([_controlDirectory stringByAppendingString:@".no-code"].fileSystemRepresentation);
     _controlDirectory=nil;
     _pending = nil; _sent = 0;
     if (_writer) { dispatch_source_cancel(_writer); _writer = nil; }

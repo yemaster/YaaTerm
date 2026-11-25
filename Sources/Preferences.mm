@@ -27,6 +27,7 @@ NSString *const AgentFramePadding = @"AgentFramePadding";
 NSString *const AgentStreamReplies = @"AgentStreamReplies";
 NSString *const LocalAgentLauncher = @"LocalAgentLauncher";
 NSString *const PrettyTables = @"PrettyTables";
+NSString *const CodeOutput = @"CodeOutput";
 NSString *const OpenWebLinks = @"OpenWebLinks";
 NSString *const RevealFileLinks = @"RevealFileLinks";
 NSString *const AnimateTabSelection = @"AnimateTabSelection";
@@ -44,7 +45,7 @@ NSUserDefaults *TerminalPreferences(void) {
                                   BackgroundMaterialKey:@(PlainBackground),
                                   AIErrorExplanations:@YES, BuiltInAgent:@YES, LocalAgentLauncher:@YES, AgentPromptColor:@6, AgentDirectoryColor:@0,
                                   AgentFramePadding:@6, AgentStreamReplies:@YES,
-                                  PrettyTables:@YES, OpenWebLinks:@YES, RevealFileLinks:@YES,
+                                  PrettyTables:@YES, CodeOutput:@YES, OpenWebLinks:@YES, RevealFileLinks:@YES,
                                   TerminalFontSize:@14, TerminalFontFamily:BundledFontFamily,
                                   SleepIdleTabs:@NO, AnimateTabSelection:@YES, CommandNoticesKey:@(AllCommands)}];
         return store;

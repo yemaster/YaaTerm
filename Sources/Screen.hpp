@@ -1,5 +1,6 @@
 #pragma once
 #include "History.hpp"
+#include "CodeOutput.hpp"
 #include <memory>
 #include <algorithm>
 #include <array>
@@ -57,6 +58,7 @@ public:
         if (!alternate && !main.link) writeTag = tag;
     }
     void resetPresentation() { context = writeTag = main.link = alt.link = 0; }
+    void setCodeOutput(bool on) { showCode = on; if (!on) codePreview = {}; }
     // Only the pane owning an acknowledged shell command can start a block.
     void beginAgentEcho() {
         lastAgentBlock = lastAgentBlock % 32767 + 1;
@@ -105,6 +107,9 @@ private:
     Buffer main, alt;
     uint16_t agentStamp = 0, lastAgentBlock = 0;
     uint32_t context = 0, writeTag = 0;
+    bool showCode = false;
+    CodePreview codePreview;
+    void finishCode();
     std::deque<Row> history;
     std::unique_ptr<HistoryArchive> archive;
     Row remember(Row &&row);

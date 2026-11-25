@@ -34,6 +34,7 @@ NSInteger PreferredAgentPromptColor(void);
 NSInteger PreferredAgentDirectoryColor(void);
 NSInteger PreferredAgentFramePadding(void);
 extern NSString *const PrettyTables;
+extern NSString *const CodeOutput;
 extern NSString *const OpenWebLinks;
 extern NSString *const RevealFileLinks;
 extern NSString *const AnimateTabSelection;

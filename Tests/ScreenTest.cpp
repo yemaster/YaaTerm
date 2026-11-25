@@ -57,6 +57,50 @@ static void checkAgentFrames() {
     for (int y=0;y<s.height;++y) assert(!s.row(y).agentStamp);
 }
 
+static void checkCodeOutput() {
+    Screen screen(18,5);
+    screen.commandExitToken = "test";
+    auto context = [&](std::string_view kind) {
+        screen.feed("\033]777;yaaterm-context;test;" + std::string(kind) + ";/tmp\a");
+    };
+    context("code:python"); screen.feed("def nope\r\n");
+    assert(!screen.row(0).codeLine && screen.row(0)[0].style.fg == Default);
+    screen.setCodeOutput(true);
+    context("code:python");
+    for (char c : "def f(): # note\r\n\r\n   return \"x\" + 42\r\n"sv) screen.feed({&c,1});
+    assert(screen.row(1).codeLine == 1 && screen.row(2).codeLine == 2 && screen.row(3).codeLine == 3);
+    assert(screen.row(1)[0].style.fg == CodeColor+5 && screen.row(1)[9].style.fg == CodeMuted);
+    assert(screen.row(3)[11].style.fg == CodeColor+2 && screen.row(3)[17].style.fg == CodeColor+3);
+    screen.setHistoryLimit(1);
+    context("code:c");
+    screen.feed("/* abcdefghijklmnopqrstuvwxyz\r\nstill a comment */\r\n");
+    assert(screen.lineAt(4).codeLine == 1 && screen.lineAt(5).codeLine == ContinuedCodeLine);
+    assert(screen.lineAt(5)[1].style.fg == CodeMuted && screen.lineAt(6)[1].style.fg == CodeMuted);
+    context("numbered:python");
+    screen.feed("    11\treturn 2\r\n");
+    assert(!screen.lineAt(7).codeLine && screen.lineAt(7)[4].style.fg == CodeMuted &&
+           screen.lineAt(7)[8].style.fg == CodeColor+5 && screen.lineAt(7)[4].ch == '1');
+    context("code:c"); screen.feed("\033[31mreturn\033[0m");
+    context("cwd"); assert(screen.row(screen.y()).codeLine == 1 && screen.row(screen.y())[0].style.fg == Indexed+1);
+    screen.feed("\r\n");
+    for (int i=0;i<85;++i) screen.feed("ordinary\r\n");
+    screen.freeze(); screen.thaw();
+    assert(screen.archivedRows()>64 && screen.lineAt(2).codeLine == 2 && screen.lineAt(5).codeLine == ContinuedCodeLine);
+    context("code:text");
+    screen.feed("12345678901234567890\r\n"); context("cwd");
+    screen.resize(8,9); screen.resize(25,9);
+    int end = screen.y();
+    assert(end > 0 && screen.row(end-1).codeLine == 1 && screen.row(end-1).written == 20);
+    screen.feed("\033[2J"); assert(!screen.row(end-1).codeLine);
+    Screen narrow(6,5);
+    narrow.setCodeOutput(true); narrow.commandExitToken = "ok";
+    narrow.feed("\033]777;yaaterm-context;ok;code:c;/tmp\a12345/* abc*/int x\r\n");
+    assert(narrow.row(1)[2].style.fg == CodeMuted && narrow.row(2)[1].style.fg == CodeColor+5);
+    narrow.feed("\033]777;yaaterm-context;ok;code:text;/tmp\a");
+    narrow.feed(std::string_view("\0AB\r\n",5));
+    assert(!narrow.row(3).codeLine);
+}
+
 static void checkFailureAnchor() {
     Screen screen(16,4);
     screen.feed("bad 路径!\r\n");
@@ -83,6 +127,7 @@ int main() {
     checkFreeze();
     checkFailureAnchor();
     checkAgentFrames();
+    checkCodeOutput();
     Screen s(6,3);
     s.feed("abc\033[2D!"); assert(s.row(0)[1].ch == '!');
     s.feed("\033[2J\033[H\033[38;2;11;22;33mA");

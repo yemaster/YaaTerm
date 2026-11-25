@@ -55,7 +55,7 @@ NSString *SettingsSectionTitle(NSInteger section) { return @[@"通用",@"外观"
 // The form and the search results share the same names and destinations.
 enum SettingID : NSInteger {
     EndedSession, History, TabMotion, CommandAlerts, Mode, FontFamily, FontWeight, FontSize, LightTheme, DarkTheme, Material,
-    BackOpacity, WallpaperFile, ImageOpacity, APIFormat, APIEndpoint, APIKey, APIModel, APIActions, IdleSleep, Tables, WebLinks, FileLinks,
+    BackOpacity, WallpaperFile, ImageOpacity, APIFormat, APIEndpoint, APIKey, APIModel, APIActions, IdleSleep, Tables, SourceCode, WebLinks, FileLinks,
     AppVersion, AutoCheck, AutoInstall, CheckNow, Repository, Feedback, ReleaseNotes, ErrorHelp, AgentInput, LocalLauncher,
     PromptColor, DirectoryColor, FramePadding, StreamReplies, SettingCount
 };
@@ -83,6 +83,7 @@ static const SettingInfo &setting(SettingID index) {
         {APISection,@"LLMActions",@"",@"连接",nil},
         {PerformanceSection,SleepIdleTabs,@"休眠闲置标签页",@"标签页",@"后台闲置 15 分钟后休眠。有前台任务时保持唤醒。"},
         {TerminalSection,PrettyTables,@"列表显示为表格",@"命令输出",@"适用于文件、进程、容器等列表。"},
+        {TerminalSection,CodeOutput,@"代码行号与高亮",@"命令输出",@"用 cat 或 nl 查看文件时显示。"},
         {TerminalSection,OpenWebLinks,@"打开网页链接",@"⌘ 点按",@"用默认浏览器打开。"},
         {TerminalSection,RevealFileLinks,@"显示文件位置",@"⌘ 点按",@"在 Finder 中定位文件。"},
         {AboutSection,@"AppVersion",@"当前版本",@"应用",nil},
@@ -707,7 +708,7 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
         _imageOpacity = [[OpacityControl alloc] initWithKey:BackgroundImageOpacity title:@"图片不透明度"];
         [self addField:_imageOpacity setting:ImageOpacity];
     } else if (section == TerminalSection) {
-        [self addSwitch:Tables]; [self addSwitch:WebLinks]; [self addSwitch:FileLinks];
+        [self addSwitch:Tables]; [self addSwitch:SourceCode]; [self addSwitch:WebLinks]; [self addSwitch:FileLinks];
     } else if (section == PerformanceSection) {
         [self addSwitch:IdleSleep];
         NSPopUpButton *limit = [self picker:History];

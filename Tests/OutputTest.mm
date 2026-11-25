@@ -16,6 +16,7 @@
 - (const yaa::Row &)displayRow:(int)y;
 - (CGFloat)topOfRow:(int)y;
 - (int)rowAtY:(CGFloat)y;
+- (CGFloat)textOriginForRow:(int)y;
 @end
 
 @interface ShortcutRecorder (OutputTest)
@@ -162,6 +163,50 @@ static void checkListingFormats() {
     assert(!FormatForOutput("unsupported"));
 }
 
+static void checkFilePreview(TerminalView *pane, Session *session, NSString *directory) {
+    NSString *source = @"def greet():\n\n    return \"hello\"  # greeting\n";
+    NSString *path = [directory stringByAppendingPathComponent:@"sample code.py"];
+    assert([source writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+    auto run = [&](NSString *command, NSString *title) {
+        NSString *line = [NSString stringWithFormat:@"clear\r%@\rprintf '\\033]2;%@\\007'\r",command,title];
+        [session send:[line dataUsingEncoding:NSUTF8StringEncoding]];
+        until(^BOOL{ return [pane.sessionTitle isEqual:title]; });
+    };
+    auto output = [&]() -> int {
+        int rows = int((NSHeight(pane.bounds)-24)/[[pane valueForKey:@"lh"] doubleValue]);
+        for (int y=0;y<rows;++y) {
+            const auto &r = [pane displayRow:y];
+            for (int x=0;x+8 < r.written;++x)
+                if (r[x].ch == 'd' && r[x+4].ch == 'g' && r[x+8].ch == 't') return y;
+        }
+        return -1;
+    };
+    SetTerminalPreference(CodeOutput,YES);
+    run(@"cat 'sample code.py'",@"cat-code");
+    int y = output(); assert(y >= 0);
+    const auto &first = [pane displayRow:y];
+    assert(first.codeLine == 1 && first[0].ch == 'd' && first[0].style.fg == yaa::CodeColor+5);
+    assert([pane displayRow:y+1].codeLine == 2 && [pane displayRow:y+2].codeLine == 3);
+    assert([pane textOriginForRow:y] > 16);
+    paint(pane,@"cat-code.png");
+    SetTerminalPreference(CodeOutput,NO);
+    assert([pane textOriginForRow:y] == 16);
+    run(@"cat 'sample code.py'",@"raw-code");
+    y = output(); assert(y >= 0 && ![pane displayRow:y].codeLine && [pane displayRow:y][0].style.fg == yaa::Default);
+    SetTerminalPreference(CodeOutput,YES);
+    for (NSString *cmd in @[@"nl -ba -v 7 'sample code.py'",@"cat -n 'sample code.py'"]) {
+        run(cmd,[cmd hasPrefix:@"nl"] ? @"nl-code" : @"cat-numbered"); y = output(); assert(y >= 0);
+        const auto &r = [pane displayRow:y];
+        assert(!r.codeLine && r[5].ch == ([cmd hasPrefix:@"nl"] ? '7' : '1') &&
+               r[5].style.fg == yaa::CodeMuted && r[8].style.fg == yaa::CodeColor+5);
+    }
+    run(@"cat 'sample code.py' | /bin/cat",@"cat-pipe");
+    y = output(); assert(y >= 0 && ![pane displayRow:y].codeLine && [pane displayRow:y][0].style.fg == yaa::Default);
+    run(@"cat 'sample code.py' > copy.py",@"cat-copy");
+    assert([[NSString stringWithContentsOfFile:[directory stringByAppendingPathComponent:@"copy.py"]
+                    encoding:NSUTF8StringEncoding error:nil] isEqual:source]);
+}
+
 static void testTerminalOutput(NSString *directory) {
     NSString *file = [directory stringByAppendingPathComponent:@"spaced name.txt"];
     assert([@"content" writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil]);
@@ -214,6 +259,7 @@ static void testTerminalOutput(NSString *directory) {
     auto send = [&](NSString *s){ [session send:[s dataUsingEncoding:NSUTF8StringEncoding]]; };
     send(@"cd -- \"$ZDOTDIR\"; export PATH=\"$PWD:$PATH\"; PROMPT='❯ '; printf '\\033]2;ready\\007'\r");
     until(^BOOL{ return [pane.sessionTitle isEqual:@"ready"]; });
+    checkFilePreview(pane,session,directory);
     send(@"clear\rls -la\rdocker ps\rcd /\r");
     until(^BOOL{ return [pane.sessionTitle isEqual:@"done"]; });
     auto buttons = ^NSDictionary *{ return [pane valueForKey:@"listingButtons"]; };

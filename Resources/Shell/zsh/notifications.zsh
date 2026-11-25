@@ -12,6 +12,54 @@ _yaaterm_prompt_context() {
     fi
     return 0
 }
+# Describe direct file reads. The real command still owns stdin, stdout and its exit status.
+_yaaterm_code_context() {
+    local name=$1 mode=code family='' arg file ext lang parse_options=1
+    shift
+    [[ $name == nl ]] && mode=numbered
+    while (( $# )); do
+        arg=$1; shift
+        if (( parse_options )); then
+            case $arg in
+                --) parse_options=0; continue ;;
+                -) return ;;
+                -*) if [[ $name == cat && $arg == -[benstuvAET]## ]]; then
+                        [[ $arg == *[bn]* ]] && mode=numbered
+                    elif [[ $name == nl && $arg == -p ]]; then
+                        continue
+                    elif [[ $name == nl && $arg == -[bfhilnvw]* ]]; then
+                        # Formatting operands may be attached or separate. Keep nl's own numbering.
+                        if (( ${#arg} == 2 )); then (( $# )) || return; arg+=$1; shift; fi
+                        [[ ${arg[3,-1]} == [a-zA-Z0-9-]## ]] || return
+                    else return
+                    fi
+                    continue ;;
+            esac
+        fi
+        file=${(Q)arg}
+        [[ $file == [[:alnum:]_./~@+[:space:]-]## && $file != - && $file != *[[:cntrl:]]* ]] || return
+        [[ $arg == '~/'* ]] && file=$HOME/${file#\~/}
+        [[ -f $file && -r $file ]] || return
+        ext=${file:t:l}
+        case $ext in
+            *.swift|*.c|*.h|*.m|*.mm|*.cpp|*.hpp|*.cc|*.cs|*.go|*.rs|*.java|*.kt|*.dart) lang=c ;;
+            *.js|*.mjs|*.cjs|*.ts|*.tsx|*.jsx) lang=js ;;
+            *.py|*.pyi) lang=python ;;
+            *.sh|*.zsh|*.bash|*.fish|*.rb|*.pl|makefile|dockerfile|.zshrc|.bashrc) lang=shell ;;
+            *.json|*.jsonc) lang=json ;;
+            *.yaml|*.yml|*.toml|*.ini|*.conf|*.cfg|*.properties|.env|.env.*) lang=config ;;
+            *.sql) lang=sql ;;
+            *.txt|*.md|*.log|*.csv|license|readme|notice) lang=text ;;
+            *.a|*.o|*.dylib|*.so|*.bin|*.pdf|*.zip|*.gz|*.xz|*.bz2|*.tar|*.png|*.ico|*.icns|*.jpg|*.jpeg|*.heic|*.gif|*.webp|*.mp[34]|*.mov|*.woff*|*.ttf|*.db|*.sqlite*) return ;;
+            *) lang=text ;;
+        esac
+        if [[ -z $family ]]; then family=$lang; elif [[ $family != $lang ]]; then family=text; fi
+    done
+    if [[ -n $family ]]; then
+        _yaaterm_listing=$mode:$family
+        _yaaterm_context "$_yaaterm_listing"
+    fi
+}
 _yaaterm_command_start() {
     emulate -L zsh
     setopt extendedglob
@@ -63,6 +111,7 @@ _yaaterm_command_start() {
         return 0
     fi
     case $name in
+        cat|nl) [[ -e ${_yaaterm_ai_dir}.no-code ]] || _yaaterm_code_context "$name" "${words[@]}"; return 0 ;;
         ls|docker|kubectl|df|ps|git|launchctl|pip|pip3|pip3.<->|python|python3|python3.<->) ;;
         *) return 0 ;;
     esac

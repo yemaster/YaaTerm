@@ -8,8 +8,8 @@
 namespace yaa {
 namespace {
 struct Header {
-    uint16_t columns, used, wrapAt : 15, hasAgentStamp : 1;
-    size_t bytes() const { return sizeof(Header) + hasAgentStamp*sizeof(uint16_t); }
+    uint16_t columns, used, wrapAt : 14, hasCodeLine : 1, hasAgentStamp : 1;
+    size_t bytes() const { return sizeof(Header) + hasAgentStamp*sizeof(uint16_t) + hasCodeLine*sizeof(uint32_t); }
 };
 static_assert(sizeof(Header) == 6);
 FILE *temporaryFile() {
@@ -36,12 +36,15 @@ void HistoryArchive::dropReadCache() {
 bool HistoryArchive::append(const Row &row) {
     if (ioFailed) return false;
     if (pendingCount == rowsPerPage && !commit()) { ioFailed = true; return false; }
-    Header header{(uint16_t)row.size(),(uint16_t)row.used(),row.wrapAt,row.agentStamp!=0};
+    Header header{(uint16_t)row.size(),(uint16_t)row.used(),row.wrapAt,row.codeLine!=0,row.agentStamp!=0};
     size_t start = pending.size(), cells = header.used*sizeof(Cell);
     pendingOffsets[pendingCount++] = (uint32_t)start;
     pending.resize(start + header.bytes() + cells);
     memcpy(pending.data()+start,&header,sizeof(header));
-    if (header.hasAgentStamp) memcpy(pending.data()+start+sizeof(header),&row.agentStamp,sizeof(row.agentStamp));
+    uint16_t stamp = row.agentStamp;
+    uint32_t line = row.codeLine;
+    if (header.hasAgentStamp) memcpy(pending.data()+start+sizeof(header),&stamp,sizeof(stamp));
+    if (header.hasCodeLine) memcpy(pending.data()+start+header.bytes()-sizeof(line),&line,sizeof(line));
     if (cells) memcpy(pending.data()+start+header.bytes(),row.data(),cells);
     return true;
 }
@@ -69,7 +72,7 @@ bool HistoryArchive::load(int64_t page) const {
     }
     Location loc{};
     if (!readAt(index.get(),&loc,sizeof(loc),page*sizeof(loc)) || !loc.bytes ||
-        loc.bytes > loc.plainBytes || loc.plainBytes > rowsPerPage*(sizeof(Header)+sizeof(uint16_t)+1000*sizeof(Cell))) return false;
+        loc.bytes > loc.plainBytes || loc.plainBytes > rowsPerPage*(sizeof(Header)+sizeof(uint16_t)+sizeof(uint32_t)+1000*sizeof(Cell))) return false;
     decoded.resize(loc.plainBytes);
     cachedPage = cachedRow = -1;
     if (loc.bytes == loc.plainBytes) {
@@ -107,8 +110,11 @@ const Row &HistoryArchive::rowAt(int64_t index) const {
     }
     Header h; memcpy(&h,record,sizeof(h));
     result.assign(h.columns,Cell{}); result.wrapAt = h.wrapAt; result.written = h.used;
-    result.agentStamp = 0;
-    if (h.hasAgentStamp) memcpy(&result.agentStamp,record+sizeof(h),sizeof(result.agentStamp));
+    uint16_t stamp = 0;
+    uint32_t line = 0;
+    if (h.hasAgentStamp) memcpy(&stamp,record+sizeof(h),sizeof(stamp));
+    if (h.hasCodeLine) memcpy(&line,record+h.bytes()-sizeof(line),sizeof(line));
+    result.agentStamp = stamp; result.codeLine = line;
     memcpy(result.data(),record+h.bytes(),h.used*sizeof(Cell));
     if (ioFailed && index+1 == size()) result.wrapAt = 0;
     cachedRow = index;

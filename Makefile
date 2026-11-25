@@ -3,8 +3,8 @@ BIN := $(APP)/Contents/MacOS/YaaTerm
 CXX := xcrun clang++
 FLAGS := -std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=13.0
 SPARKLE := build/dependencies/sparkle-2.10.1
-GRID := Sources/Emoji.cpp Sources/Screen.cpp Sources/History.cpp
-GRID_HEADERS := Sources/Emoji.hpp Sources/EmojiData.inc Sources/Screen.hpp Sources/History.hpp Sources/TerminalRow.hpp
+GRID := Sources/Emoji.cpp Sources/Screen.cpp Sources/History.cpp Sources/CodeOutput.cpp
+GRID_HEADERS := Sources/Emoji.hpp Sources/EmojiData.inc Sources/Screen.hpp Sources/History.hpp Sources/TerminalRow.hpp Sources/CodeOutput.hpp
 ASSISTANT := Sources/TerminalAssistant.mm Sources/LLMConfiguration.mm
 SOURCES := $(ASSISTANT) Sources/AppUpdates.mm Sources/Main.mm Sources/TaskNotices.mm Sources/LLMSettingsForm.mm Sources/Wallpaper.mm Sources/WindowContent.mm Sources/TabBar.mm Sources/TabWorkspace.mm Sources/TerminalView.mm Sources/TerminalOutput.mm Sources/FindBar.mm Sources/Session.mm $(GRID) Sources/TerminalSearch.cpp Sources/Preferences.mm Sources/Shortcuts.mm Sources/Palette.mm Sources/SettingsView.mm
 UPDATE_TEST := build/tests/UpdateTest.app/Contents/MacOS/YaaTerm
