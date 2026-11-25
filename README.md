@@ -75,7 +75,7 @@ Agent 执行框沿用当前 zsh 的左右提示符和配色。模型回复可以
 
 「编辑 → 搜索终端内容」会在当前分屏显示搜索框。输入文字即可定位并高亮匹配，支持中文、大小写不敏感的查找和跨自动折行匹配。可用上下箭头按钮或快捷键循环查找。普通屏幕支持搜索整个会话的回滚，Vim 等程序使用备用屏幕时只搜索当前屏幕。
 
-「终端 → 命令输出」控制列表表格。默认 zsh 中，可以点列表右上角的「表格」或「原始数据」切换。支持 `ls -l`、`df -h`、`ps` / `ps aux` / `ps -ef`、`launchctl list`、`git remote -v`、`git worktree list` 和 `pip list`。Docker 支持容器、镜像、网络和卷的标准列表。kubectl 支持 `get pods`、`services`、`deployments` 和 `namespaces` 的默认列。每份列表单独切换。搜索和拖选使用原始文字。管道、重定向和自定义输出格式沿用普通输出。
+「终端 → 命令输出」控制列表表格。默认 zsh 中，可以点列表右上角的「表格」或「原始数据」切换。支持 `ls -l`、`df -h`、`ps` / `ps aux` / `ps -ef`、`launchctl list`、`git remote -v`、`git worktree list` 和 `pip list`。Docker 支持容器、镜像、网络和卷的标准列表。kubectl 支持 `get pods`、`services`、`deployments` 和 `namespaces` 的默认列。每份列表单独切换。拖选可直接复制表格里的文字，跨列用制表符分隔。搜索使用原始文字。管道、重定向和自定义输出格式沿用普通输出。
 
 同组的「代码行号与高亮」适用于 zsh 中直接执行的 `cat` 和 `nl`。例如 `cat main.swift` 会在左侧显示行号，复制和搜索时使用正文。`nl`、`cat -n` 和 `cat -b` 沿用命令自身的编号。
 

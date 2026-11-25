@@ -13,6 +13,7 @@
 #import "Shortcuts.h"
 #import "Wallpaper.h"
 #import <QuartzCore/CALayer.h>
+#import <CoreText/CoreText.h>
 #import "Palette.h"
 #include "Screen.hpp"
 #include "CellGraphics.hpp"
@@ -260,7 +261,7 @@ enum FixState { ExplainError, AnalyzingError, SendingExplanation, ShowExplanatio
 }
 - (void)toggleListing:(NSButton *)sender {
     OutputReference *record = [_references record:(uint32_t)sender.tag];
-    record.raw = !record.raw; self.needsDisplay = YES;
+    record.raw = !record.raw; _anchor = _extent = -1; self.needsDisplay = YES;
     [self.window makeFirstResponder:self];
 }
 - (void)listingButton:(OutputReference *)record row:(int)y rawWidth:(CGFloat)rawWidth {
@@ -345,8 +346,8 @@ struct PaintedLine {
     NSColor *headerFill = nil, *alternateFill = nil;
     NSArray<NSString *> *fields = nil;
     ListingLayout layout;
-    NSDictionary *inlineStyles[2] = {};
-    NSDictionary *styles[2][2] = {}; // Truncation and non-ASCII layout.
+    NSDictionary *inlineStyles[3] = {}; // Primary, secondary, selection.
+    NSDictionary *styles[3][2] = {}; // Truncation and non-ASCII layout.
 };
 - (CGFloat)listingWidth {
     if (!_listingActionWidth) {
@@ -356,8 +357,17 @@ struct PaintedLine {
     }
     return MAX(_cw,NSWidth(self.bounds)-insetX-_listingActionWidth-10);
 }
-- (BOOL)drawListing:(OutputReference *)record atRow:(int)y cache:(PaintedLine &)cache header:(BOOL *)hasButton {
-    TextPoint point = [self displayPoint:y];
+- (BOOL)presentsListings {
+    return _tables && !_screen->alternate && !_findBar.field.stringValue.length;
+}
+- (OutputReference *)listingForRow:(const Row &)row {
+    uint32_t tag = row.empty() ? 0 : row.front().tag;
+    if (!(tag & 3)) return nil;
+    OutputReference *record = [_references record:tag];
+    if ((tag & 3) == ExplicitLink) record = [_references record:record.parent];
+    return (record.tag & 3) ? record : nil;
+}
+- (BOOL)loadListing:(OutputReference *)record atRow:(int)y point:(TextPoint)point cache:(PaintedLine &)cache {
     ListingFormat format = record.format;
     const auto &spec = SpecForListing(format);
     if (record.raw && y > 0) {
@@ -389,13 +399,25 @@ struct PaintedLine {
         cache.format = parsed.format; cache.tag = record.tag;
         cache.header = parsed.header; cache.fields = parsed.fields;
     }
+    return cache.fields != nil;
+}
+- (NSRect)listingSelectionAtRow:(int)y {
+    if (_anchor < 0 || _extent < 0 || _anchor == _extent) return NSZeroRect;
+    int base = y*_screen->cols;
+    int start = std::max(0,std::min(_anchor,_extent)-base);
+    int end = std::min(_screen->cols,std::max(_anchor,_extent)-base+1);
+    return end > start ? NSMakeRect(insetX+start*_cw,[self topOfRow:y],(end-start)*_cw,_lh) : NSZeroRect;
+}
+- (BOOL)drawListing:(OutputReference *)record atRow:(int)y cache:(PaintedLine &)cache header:(BOOL *)hasButton {
+    TextPoint point = [self displayPoint:y];
+    if (![self loadListing:record atRow:y point:point cache:cache]) return NO;
     BOOL first = cache.first == point.row && point.column == 0;
-    if (cache.fields && ((first && (cache.header || cache.atStart)) || y == 0)) {
+    if ((first && (cache.header || cache.atStart)) || y == 0) {
         const auto &row = [self displayRow:y];
         [self listingButton:record row:y rawWidth:insetX+MIN(row.used(),_screen->cols)*_cw];
         *hasButton = YES;
     }
-    if (record.raw || !cache.fields) return NO;
+    if (record.raw) return NO;
 
     const auto &palette = CurrentInterfacePalette();
     CGFloat top = [self topOfRow:y], pixel = 1/[self gridScale];
@@ -434,6 +456,13 @@ struct PaintedLine {
     const auto &layout = cache.layout;
     int lineBand = first ? 0 : listingBand(*_screen,cache.first,point,layout.bands);
     const auto &resolved = SpecForListing(cache.format);
+    NSRect selection = [self listingSelectionAtRow:y];
+    NSColor *selectedInk = nil;
+    if (!NSIsEmptyRect(selection)) {
+        selection = NSIntersectionRect(selection,NSMakeRect(insetX,top,[self listingWidth],_lh));
+        [selectionColor() setFill]; NSRectFill(selection);
+        selectedInk = SchemeInk(PreferredColorScheme(),SchemeSelectedText);
+    }
     for (int i=0;i<layout.count;++i) {
         auto col = layout.columns[i];
         if (col.band != lineBand) continue;
@@ -442,12 +471,26 @@ struct PaintedLine {
         if (!value.length) continue;
         bool secondary = cache.header || i != 0, right = resolved.widths[i] < 0;
         CGFloat advance = value.length*_cw;
-        if (advance <= col.width && [value canBeConvertedToEncoding:NSASCIIStringEncoding]) {
-            CGFloat x = right ? NSMaxX(r)-advance : col.x;
-            [value drawAtPoint:NSMakePoint(x,NSMinY(r)) withAttributes:cache.inlineStyles[secondary]];
-        } else {
-            [value drawInRect:r withAttributes:cache.styles[secondary][right]];
+        bool fits = advance <= col.width && [value canBeConvertedToEncoding:NSASCIIStringEncoding];
+        auto draw = [&](NSDictionary *attrs) {
+            if (fits) [value drawAtPoint:NSMakePoint(right ? NSMaxX(r)-advance : col.x,NSMinY(r)) withAttributes:attrs];
+            else [value drawInRect:r withAttributes:attrs];
+        };
+        NSDictionary *attrs = fits ? cache.inlineStyles[secondary] : cache.styles[secondary][right];
+        if (!selectedInk || NSMaxX(selection) <= col.x || NSMinX(selection) >= NSMaxX(r)) {
+            draw(attrs); continue;
         }
+        NSDictionary *__strong &selected = fits ? cache.inlineStyles[2] : cache.styles[2][right];
+        if (!selected) {
+            NSMutableDictionary *style = [attrs mutableCopy];
+            style[NSForegroundColorAttributeName] = selectedInk; selected = style;
+        }
+        if (NSMinX(selection) <= col.x && NSMaxX(selection) >= NSMaxX(r)) {
+            draw(selected); continue;
+        }
+        draw(attrs);
+        [NSGraphicsContext saveGraphicsState]; NSRectClip(selection);
+        draw(selected); [NSGraphicsContext restoreGraphicsState];
     }
     return YES;
 }
@@ -1211,8 +1254,7 @@ struct PaintedLine {
     int first = MAX(0,[self rowAtY:NSMinY(dirty)]-(_verticalGap>0));
     int end = MIN(_screen->height,[self rowAtY:NSMaxY(dirty)]+1+(_verticalGap>0));
     PaintedLine listingCache;
-    BOOL selecting = _anchor >= 0 && _extent != _anchor;
-    BOOL present = _tables && !_screen->alternate && !selecting && !_findBar.field.stringValue.length;
+    BOOL present = [self presentsListings];
     BOOL framed = _screen->agentOutputStamp()!=0;
     NSDictionary *gutterAttributes = nil;
     for (int y = first; y < end; ++y) {
@@ -1220,15 +1262,11 @@ struct PaintedLine {
         const Row *source = &[self displayRow:y];
         if (source->agentStamp) framed=YES;
         if (present) {
-            uint32_t tag = source->empty() ? 0 : source->front().tag;
-            if (tag & 3) {
-                OutputReference *record = [_references record:tag];
-                if ((tag & 3) == ExplicitLink) record = [_references record:record.parent];
-                if (record && (record.tag & 3)) {
-                    drawn = [self drawListing:record atRow:y cache:listingCache header:&header];
-                    // Reading a wrapped listing can replace the archive's transient row.
-                    if (!drawn && _offset) source = &[self displayRow:y];
-                }
+            OutputReference *record = [self listingForRow:*source];
+            if (record) {
+                drawn = [self drawListing:record atRow:y cache:listingCache header:&header];
+                // Reading a wrapped listing can replace the archive's transient row.
+                if (!drawn && _offset) source = &[self displayRow:y];
             }
         }
         if (_listingButtons && !header) {
@@ -1368,8 +1406,7 @@ struct PaintedLine {
     OutputReference *block = [_references record:leading];
     if ((leading & 3) == ExplicitLink) block = [_references record:block.parent];
     BOOL files = block && (block.tag & 3) == FileListing;
-    BOOL selecting = _anchor >= 0 && _extent != _anchor;
-    BOOL pretty = _tables && block && (block.tag & 3) && !block.raw && !_screen->alternate && !selecting && !_findBar.field.stringValue.length;
+    BOOL pretty = [self presentsListings] && (block.tag & 3) && !block.raw;
     // Plain output has one hit target per grid cell. Table column edges can fall between cells.
     if (stable && !pretty) *stable = NSMakeRect(origin+x*_cw,[self topOfRow:y],_cw,_lh);
     if (!pretty && (tag & 3) == ExplicitLink && rec.url)
@@ -1551,7 +1588,12 @@ struct PaintedLine {
 }
 - (void)mouseDragged:(NSEvent *)event {
     if ([self reportPointer:event button:0 action:MouseAction::Motion]) return;
-    _extent = [self indexAt:event]; self.needsDisplay = YES;
+    int next = [self indexAt:event];
+    if (_anchor < 0 || next == _extent) return;
+    CGFloat top = [self topOfRow:std::min(_extent,next)/_screen->cols];
+    CGFloat bottom = [self topOfRow:std::max(_extent,next)/_screen->cols]+_lh;
+    _extent = next;
+    [self setNeedsDisplayInRect:NSMakeRect(0,top,NSWidth(self.bounds),bottom-top)];
 }
 - (void)mouseUp:(NSEvent *)event {
     if ([self reportPointer:event button:0 action:MouseAction::Release]) return;
@@ -1601,17 +1643,80 @@ struct PaintedLine {
     _offset = _screen->historySize()-top.row; _topColumn = top.column; _visibleRows.clear(); [self updateFrameSpacing];
     _anchor = _extent = -1; self.needsDisplay = YES;
 }
-- (void)copy:(id)sender {
-    if (_anchor < 0) return;
+// Translate a visual selection back into the field being displayed. Only partially
+// selected non-ASCII fields need shaping, and only when copying.
+static NSString *selectedFieldText(NSString *value, ListingLayout::Column col, bool rightAligned,
+                                   NSRect selection, CGFloat cw, NSFont *font) {
+    CGFloat left = MAX(NSMinX(selection),col.x)-col.x;
+    CGFloat right = MIN(NSMaxX(selection),col.x+col.width)-col.x;
+    if (right <= left) return nil;
+    if (left == 0 && right >= col.width) return value;
+    bool ascii = [value canBeConvertedToEncoding:NSASCIIStringEncoding];
+    CTLineRef line = nullptr;
+    CGFloat width = value.length*cw;
+    if (!ascii) {
+        NSAttributedString *string = [[NSAttributedString alloc] initWithString:value
+            attributes:@{NSFontAttributeName:font,NSLigatureAttributeName:@0}];
+        line = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)string);
+        width = CTLineGetTypographicBounds(line,nullptr,nullptr,nullptr);
+    }
+    CGFloat visible = MIN(width,col.width);
+    CGFloat origin = rightAligned ? col.width-visible : 0;
+    auto indexAt = [&](CGFloat x, bool end) -> NSUInteger {
+        x -= origin;
+        if (x <= 0) return 0;
+        if (x >= visible) return value.length;
+        // Selecting the truncation mark includes the rest of the original field.
+        if (width > visible && x > visible-cw) {
+            if (end) return value.length;
+            x = MAX(0,visible-cw);
+        }
+        NSInteger index = line ? CTLineGetStringIndexForPosition(line,CGPointMake(x,0)) : std::lround(x/cw);
+        return std::clamp<NSInteger>(index,0,value.length);
+    };
+    NSUInteger first = indexAt(left,false), last = indexAt(right,true);
+    if (line) CFRelease(line);
+    if (first == last) return nil;
+    NSRange range = NSMakeRange(MIN(first,last),MAX(first,last)-MIN(first,last));
+    return [value substringWithRange:ascii ? range : [value rangeOfComposedCharacterSequencesForRange:range]];
+}
+- (NSString *)selectedText {
+    if (_anchor < 0) return nil;
     int lo = std::min(_anchor,_extent), hi = std::max(_anchor,_extent), w = _screen->cols;
     NSMutableString *text = [NSMutableString string];
+    BOOL tables = [self presentsListings];
+    PaintedLine cache;
+    int64_t copiedLine = -1;
     for (int y = lo/w; y <= hi/w; ++y) {
-        const auto &row = [self displayRow:y];
-        NSRange columns = [self selectedColumnsInRow:y];
-        int count = row.wrapAt ? row.wrapAt : (int)row.size();
-        [text appendString:cellText(row,std::min((int)columns.location,count),std::min((int)NSMaxRange(columns),count),!row.wrapAt)];
-        if (y < hi/w && !row.wrapAt) [text appendString:@"\n"];
+        const Row *row = &[self displayRow:y];
+        bool wraps = row->wrapAt != 0;
+        OutputReference *record = tables ? [self listingForRow:*row] : nil;
+        TextPoint point = [self displayPoint:y];
+        if (record && !record.raw && [self loadListing:record atRow:y point:point cache:cache]) {
+            int band = listingBand(*_screen,cache.first,point,cache.layout.bands);
+            NSRect selection = [self listingSelectionAtRow:y];
+            const auto &spec = SpecForListing(cache.format);
+            for (int i=0;i<cache.layout.count;++i) {
+                auto col = cache.layout.columns[i];
+                if (col.band != band) continue;
+                NSString *part = selectedFieldText(cache.fields[i],col,spec.widths[i]<0,selection,_cw,_regular);
+                if (!part) continue;
+                if (copiedLine == cache.first) [text appendString:@"\t"];
+                [text appendString:part]; copiedLine = cache.first;
+            }
+        } else {
+            NSRange columns = [self selectedColumnsInRow:y];
+            row = &[self displayRow:y];
+            int count = wraps ? row->wrapAt : (int)row->size();
+            [text appendString:cellText(*row,std::min((int)columns.location,count),std::min((int)NSMaxRange(columns),count),!wraps)];
+        }
+        if (y < hi/w && !wraps) [text appendString:@"\n"];
     }
+    return text;
+}
+- (void)copy:(id)sender {
+    NSString *text = [self selectedText];
+    if (!text) return;
     [NSPasteboard.generalPasteboard clearContents];
     [NSPasteboard.generalPasteboard setString:text forType:NSPasteboardTypeString];
 }

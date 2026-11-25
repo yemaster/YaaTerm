@@ -17,6 +17,7 @@
 - (CGFloat)topOfRow:(int)y;
 - (int)rowAtY:(CGFloat)y;
 - (CGFloat)textOriginForRow:(int)y;
+- (NSString *)selectedText;
 @end
 
 @interface ShortcutRecorder (OutputTest)
@@ -334,6 +335,26 @@ static void testTerminalOutput(NSString *directory) {
         if ([[pane linkAtPoint:p].path isEqual:base.path]) { hit = p; break; }
     }
     assert(hit.x); // The shell has since changed to /.
+    auto drag = [&](NSPoint from, NSPoint to) {
+        location = [pane convertPoint:from toView:nil];
+        [pane mouseDown:event(NSEventTypeLeftMouseDown)];
+        location = [pane convertPoint:to toView:nil];
+        [pane mouseDragged:event(NSEventTypeLeftMouseDragged)];
+        paint(pane,nil);
+        assert(buttons().count == 2 && [ls.title isEqual:@"原始数据"] && [ps.title isEqual:@"原始数据"]);
+        [pane mouseUp:event(NSEventTypeLeftMouseUp)];
+    };
+    NSPoint firstLetter = NSMakePoint(16+.5*cw,hit.y), sixthLetter = NSMakePoint(16+5.5*cw,hit.y);
+    drag(sixthLetter,firstLetter); assert([[pane selectedText] isEqual:@"spaced"]);
+    drag(firstLetter,sixthLetter); assert([[pane selectedText] isEqual:@"spaced"]);
+    paint(pane,@"table-selection.png");
+    assert([[[pane linkAtPoint:hit] path] isEqual:base.path]);
+    drag(NSMakePoint(16+.5*cw,NSMidY(ls.frame)),NSMakePoint(16+1.5*cw,NSMidY(ls.frame)));
+    assert([[pane selectedText] isEqual:@"名"]);
+    drag(NSMakePoint(17,NSMidY(ls.frame)),sixthLetter);
+    assert([[pane selectedText] hasSuffix:@"\nspaced"]);
+    drag(NSMakePoint(17,NSMidY(ls.frame)),NSMakePoint(NSMinX(ls.frame)-2,NSMidY(ls.frame)));
+    assert([[pane selectedText] hasPrefix:@"名称\t大小\t修改时间"]);
     assert(!tracking());
     hover(NSMakePoint(NSWidth(pane.bounds)-100,hit.y));
     [pane setLinkModifierDown:YES]; assert(!hand());
@@ -348,6 +369,11 @@ static void testTerminalOutput(NSString *directory) {
     auto &rawRow = [pane displayRow:fileY];
     int nameStart = rawRow.used()-(int)name.length;
     assert([[pane linkAtPoint:NSMakePoint(16+(nameStart+3)*cw,hit.y)].path isEqual:base.path]);
+    location = [pane convertPoint:NSMakePoint(16+(nameStart+.5)*cw,hit.y) toView:nil];
+    [pane mouseDown:event(NSEventTypeLeftMouseDown)];
+    location = [pane convertPoint:NSMakePoint(16+(nameStart+5.5)*cw,hit.y) toView:nil];
+    [pane mouseDragged:event(NSEventTypeLeftMouseDragged)]; [pane mouseUp:event(NSEventTypeLeftMouseUp)];
+    assert([[pane selectedText] isEqual:@"spaced"] && [ls.title isEqual:@"表格"]);
     [pane toggleListing:ps]; paint(pane,nil);
     assert([ps.accessibilityLabel isEqual:@"显示表格"]);
     [pane toggleListing:ls]; [pane toggleListing:ps];
