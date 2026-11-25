@@ -1,7 +1,7 @@
 #include "Emoji.hpp"
 #import "TerminalView.h"
 #import "FindBar.h"
-#import "AssistantPanel.h"
+#import "TerminalAssistant.h"
 #import "TerminalOutput.h"
 #include "TerminalSearch.hpp"
 #include <climits>
@@ -90,7 +90,8 @@ static NSString *cellText(const Row &row, int start, int end, bool trim) {
     std::vector<TextPoint> _visibleRows;
     Row _fragment;
     FindBar *_findBar;
-    AssistantPanel *_assistant;
+    TerminalAssistant *_assistant;
+    NSDictionary *_agentResult;
     NSButton *_fixButton;
     NSDictionary *_failure;
     int64_t _commandRow;
@@ -611,7 +612,7 @@ struct PaintedLine {
         output=[output substringFromIndex:NSMaxRange(first)];
     }
     NSDictionary *record=@{@"command":command,@"status":@(status),@"output":output};
-    if (awaiting) [_assistant receivedResult:record];
+    if (awaiting) _agentResult=record; // Deliver after the same zsh prompt is ready for the next step.
     if (failed && command.length) {
         _failure=record;
         _fixButton=[NSButton buttonWithTitle:@"解释错误" target:self action:@selector(explainFailure:)];
@@ -621,35 +622,40 @@ struct PaintedLine {
     }
 }
 - (CGFloat)positionAssistant {
-    CGFloat height=(_assistant && !_assistant.hidden) ? MIN([_assistant heightForWidth:NSWidth(self.bounds)],MAX(0.,NSHeight(self.bounds)-_lh-2*insetY)) : 0;
-    if (_assistant) _assistant.frame=NSMakeRect(0,NSHeight(self.bounds)-height,NSWidth(self.bounds),height);
+    CGFloat height=_assistant.diagnosisView ? MIN([_assistant heightForWidth:NSWidth(self.bounds)],MAX(0.,NSHeight(self.bounds)-_lh-2*insetY)) : 0;
+    if (_assistant.diagnosisView) _assistant.diagnosisView.frame=NSMakeRect(0,NSHeight(self.bounds)-height,NSWidth(self.bounds),height);
     if (_fixButton) {
-        _fixButton.hidden=_assistant && !_assistant.hidden;
+        _fixButton.hidden=_assistant!=nil;
         _fixButton.frame=NSMakeRect(MAX(0.,NSWidth(self.bounds)-84),MAX(0.,NSHeight(self.bounds)-29),76,23);
     }
     return height;
 }
-- (BOOL)assistantVisible { return _assistant && !_assistant.hidden; }
+- (BOOL)assistantVisible { return _assistant!=nil; }
 - (BOOL)builtInAgentVisible { return self.assistantVisible && [_panelFeature isEqual:BuiltInAgent]; }
 - (void)closeAssistant {
     if (!_assistant) return;
-    BOOL restoreFocus=_assistant.inputFocused;
-    [_assistant cancel]; [_assistant removeFromSuperview]; _assistant=nil; _panelFeature=nil; _localTool=nil;
-    [self configureCommandTracking]; [self sizeTerminal];
-    if (restoreFocus) [self.window makeFirstResponder:self];
+    BOOL diagnostic=_assistant.diagnosisView!=nil;
+    [_session endAgentInput:!_insideCommand && !_screen->alternate && _screen->bracketPaste];
+    _screen->agentEditor={}; _agentResult=nil;
+    [_assistant cancel]; [_assistant.diagnosisView removeFromSuperview]; _assistant=nil; _panelFeature=nil; _localTool=nil;
+    [self configureCommandTracking];
+    if (diagnostic) [self sizeTerminal]; else [self positionAssistant];
     if (_assistantVisibilityChanged) _assistantVisibilityChanged();
 }
-- (AssistantPanel *)openAssistantFor:(NSString *)feature tool:(NSString *)tool {
+- (TerminalAssistant *)openAssistantFor:(NSString *)feature tool:(NSString *)tool {
     if (![TerminalPreferences() boolForKey:feature]) return nil;
+    BOOL diagnostic=[feature isEqual:AIErrorExplanations];
+    if (!diagnostic && (_ended || _insideCommand || _screen->alternate || !_screen->bracketPaste || ![_session shellIsForeground])) {
+        NSBeep(); return nil;
+    }
     if (_assistant && (![_panelFeature isEqual:feature] || (tool && ![tool isEqual:_localTool]))) [self closeAssistant];
     if (!_assistant) {
         _panelFeature=feature; _localTool=[tool copy];
-        _assistant=[[AssistantPanel alloc] initWithDirectory:_session.workingDirectory shell:_session.shellName];
+        _assistant=[[TerminalAssistant alloc] initWithDirectory:_session.workingDirectory shell:_session.shellName];
         [_assistant prepareForLocalTool:tool diagnosis:[feature isEqual:AIErrorExplanations]];
         [self configureCommandTracking];
         __weak TerminalView *weak=self;
         _assistant.currentDirectory=^NSString *{ return weak.workingDirectory; };
-        _assistant.onFocus=^{ TerminalView *v=weak; if (v.didFocus) v.didFocus(v); };
         _assistant.onClose=^{ TerminalView *v=weak; [v closeAssistant]; [v.window makeFirstResponder:v]; };
         _assistant.onLayout=^{ [weak sizeTerminal]; };
         _assistant.onConfigure=^{ TerminalView *v=weak; if (v.configureAI) v.configureAI(); };
@@ -675,18 +681,43 @@ struct PaintedLine {
         _assistant.onComplete=^(NSString *summary, BOOL failed) {
             TerminalView *v=weak; if (v.agentFinished) v.agentFinished(v,v->_localTool ?: @"Agent",failed,summary);
         };
-        [self addSubview:_assistant]; [self sizeTerminal];
+        if (diagnostic) {
+            [self addSubview:_assistant.diagnosisView]; [self sizeTerminal];
+        } else {
+            _assistant.onTranscript=^(NSString *text) {
+                TerminalView *v=weak;
+                if (v) [v->_session postAgentText:text wakeEditor:!v->_insideCommand && v->_screen->bracketPaste && !v->_screen->alternate];
+            };
+            _screen->agentEditor=[weak](std::string_view bytes,std::string_view event) {
+                TerminalView *v=weak; if (!v) return;
+                NSString *identifier=[[NSString alloc] initWithBytes:bytes.data() length:bytes.size() encoding:NSASCIIStringEncoding];
+                if (![v->_session.agentInputID isEqual:identifier]) return;
+                if (event=="ready") {
+                    [v->_session agentInputReady:identifier];
+                    NSDictionary *result=v->_agentResult; v->_agentResult=nil;
+                    if (result) [v->_assistant receivedResult:result];
+                } else if (event=="task") {
+                    NSString *task=[v->_session takeAgentTask:identifier];
+                    if (task) [v->_assistant submitTask:task];
+                } else dispatch_async(dispatch_get_main_queue(),^{
+                    if ([v->_session.agentInputID isEqual:identifier]) [v closeAssistant];
+                });
+            };
+            if (![_session beginAgentInput:^(BOOL ready) {
+                if (!ready) { [weak closeAssistant]; NSBeep(); }
+            }]) { [self closeAssistant]; NSBeep(); return nil; }
+            [self positionAssistant];
+            [self.window makeFirstResponder:self];
+        }
     }
-    if (_assistant.hidden) { _assistant.hidden=NO; [self sizeTerminal]; }
     if (_didFocus) _didFocus(self);
-    [_assistant focusInput]; if (_assistantVisibilityChanged) _assistantVisibilityChanged();
+    if (_assistantVisibilityChanged) _assistantVisibilityChanged();
     return _assistant;
 }
 - (void)toggleAssistant:(id)sender {
     if (![TerminalPreferences() boolForKey:BuiltInAgent]) return;
-    if (!_assistant || _assistant.hidden || ![_panelFeature isEqual:BuiltInAgent]) { [self openAssistantFor:BuiltInAgent tool:nil]; return; }
-    _assistant.hidden=YES; [self sizeTerminal]; [self.window makeFirstResponder:self];
-    if (_assistantVisibilityChanged) _assistantVisibilityChanged();
+    if (_assistant && ![_panelFeature isEqual:AIErrorExplanations]) { [self closeAssistant]; return; }
+    [self openAssistantFor:BuiltInAgent tool:nil];
 }
 - (void)explainFailure:(id)sender {
     if (!_failure) { NSBeep(); return; }
@@ -707,7 +738,7 @@ struct PaintedLine {
     if (_didRename) _didRename(self);
 }
 - (void)finish:(NSString *)message {
-    _ended = YES; [_assistant cancel]; _sessionTitle = message;
+    _ended = YES; [self closeAssistant]; _sessionTitle = message;
     NSString *line = [NSString stringWithFormat:@"\r\n\033[0m[%@]\r\n",message];
     [self consume:std::string_view(line.UTF8String)];
     if (_didRename) _didRename(self);
@@ -1225,7 +1256,7 @@ struct PaintedLine {
     CGFloat height = [_findBar heightForWidth:width];
     NSRect top = NSMakeRect(NSWidth(self.bounds)-width-margin,margin,width,height);
     NSRect bottom = top;
-    bottom.origin.y = MAX(margin,NSHeight(self.bounds)-NSHeight(_assistant.frame)-height-margin);
+    bottom.origin.y = MAX(margin,NSHeight(self.bounds)-NSHeight(_assistant.diagnosisView.frame)-height-margin);
     NSRect frame = _findAtBottom ? bottom : top;
     if (_findHit && [self findHitIntersects:frame]) {
         NSRect other = _findAtBottom ? top : bottom;

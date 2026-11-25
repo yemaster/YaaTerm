@@ -671,6 +671,12 @@ void Screen::finishOSC() {
             if (!alternate && commandBegan) commandBegan(data);
             return;
         }
+        if (event=="yaaterm-editor") {
+            auto id=take(';');
+            if (!alternate && agentEditor && id.size()==36 && (data=="ready" || data=="task" || data=="closed"))
+                agentEditor(id,data);
+            return;
+        }
         if (event=="yaaterm-input") {
             auto id=take(';');
             if (inputAccepted && id.size()==36 && (data=="0" || data=="1")) inputAccepted(id,data=="1");

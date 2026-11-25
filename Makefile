@@ -5,7 +5,7 @@ FLAGS := -std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min
 SPARKLE := build/dependencies/sparkle-2.10.1
 GRID := Sources/Emoji.cpp Sources/Screen.cpp Sources/History.cpp
 GRID_HEADERS := Sources/Emoji.hpp Sources/EmojiData.inc Sources/Screen.hpp Sources/History.hpp Sources/TerminalRow.hpp
-ASSISTANT := Sources/AssistantPanel.mm Sources/LLMConfiguration.mm
+ASSISTANT := Sources/TerminalAssistant.mm Sources/LLMConfiguration.mm
 SOURCES := $(ASSISTANT) Sources/AppUpdates.mm Sources/Main.mm Sources/TaskNotices.mm Sources/LLMSettingsForm.mm Sources/Wallpaper.mm Sources/WindowContent.mm Sources/TabBar.mm Sources/TabWorkspace.mm Sources/TerminalView.mm Sources/TerminalOutput.mm Sources/FindBar.mm Sources/Session.mm $(GRID) Sources/TerminalSearch.cpp Sources/Preferences.mm Sources/Palette.mm Sources/SettingsView.mm
 UPDATE_TEST := build/tests/UpdateTest.app/Contents/MacOS/YaaTerm
 OUTPUT_TEST := build/tests/output/output-test
@@ -77,7 +77,7 @@ build/tab-test: $(SPARKLE)/.ready Tests/TabTest.mm $(filter-out Sources/Main.mm,
 	mkdir -p build
 	$(CXX) $(FLAGS) -F$(SPARKLE) -lcompression -fobjc-arc -ISources $(filter %.mm %.cpp,$^) -framework AppKit -framework QuartzCore -framework ImageIO -framework UniformTypeIdentifiers -framework Security -o $@
 
-build/llm-test: $(SPARKLE)/.ready Sources/AssistantPanel.mm Sources/AppUpdates.mm Tests/LLMTest.mm Sources/LLMConfiguration.mm Sources/LLMSettingsForm.mm Sources/SettingsView.mm Sources/Wallpaper.mm Sources/Palette.mm Sources/Preferences.mm $(wildcard Sources/*.h Sources/*.hpp Sources/*.inc)
+build/llm-test: $(SPARKLE)/.ready Sources/TerminalAssistant.mm Sources/AppUpdates.mm Tests/LLMTest.mm Sources/LLMConfiguration.mm Sources/LLMSettingsForm.mm Sources/SettingsView.mm Sources/Wallpaper.mm Sources/Palette.mm Sources/Preferences.mm $(wildcard Sources/*.h Sources/*.hpp Sources/*.inc)
 	mkdir -p build
 	$(CXX) $(FLAGS) -F$(SPARKLE) -fobjc-arc -ISources -DSecItemCopyMatching=LLMTestCopyMatching -DSecItemUpdate=LLMTestUpdate -DSecItemAdd=LLMTestAdd $(filter %.mm,$^) -framework AppKit -framework UniformTypeIdentifiers -framework ImageIO -framework Security -o $@
 

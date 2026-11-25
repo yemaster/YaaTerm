@@ -184,10 +184,23 @@ _yaaterm_prompt_context
 _yaaterm_input_widget() {
     emulate -L zsh
     local id op line ok=0
+    if [[ -n ${_yaaterm_editing-} ]]; then
+        if [[ ! -r $_yaaterm_ai_dir/mode || $(<"$_yaaterm_ai_dir/mode") != $_yaaterm_mode ]]; then
+            _yaaterm_edit_op=leave; zle .accept-line; return 0
+        fi
+        _yaaterm_draw_notes
+    elif [[ ( -r $_yaaterm_ai_dir/mode || -n ${_yaaterm_mode-} ) && $CONTEXT == start && ! -f $_yaaterm_ai_dir/line ]]; then
+        if (( ! $+functions[_yaaterm_compose] )); then
+            builtin source "$_yaaterm_agents_dir/../zsh/agent-input.zsh"
+        fi
+        zmodload -F zsh/files b:zf_rm || return 0
+        _yaaterm_compose
+        return 0
+    fi
     [[ -f $_yaaterm_ai_dir/line ]] || return 0
     { IFS= builtin read -r id && IFS= builtin read -r op && IFS= builtin read -r line } < "$_yaaterm_ai_dir/line" || return 0
     zmodload -F zsh/files b:zf_rm && zf_rm -- "$_yaaterm_ai_dir/line" 2>/dev/null || return 0
-    if [[ -z $BUFFER && $CONTEXT == start && -n $line && $line != *[[:cntrl:]]* && $op == (run|fill) ]]; then
+    if [[ -z $BUFFER && ( $CONTEXT == start || -n ${_yaaterm_editing-} ) && -n $line && $line != *[[:cntrl:]]* && $op == (run|fill) ]]; then
         ok=1
         if [[ $line == 'command yaa-agent '* ]]; then
             builtin hash "yaa-agent=$_yaaterm_agents_dir/yaa-agent"
@@ -198,6 +211,7 @@ _yaaterm_input_widget() {
     fi
     builtin printf '\033]777;yaaterm-input;%s;%s;%d\007' "$_yaaterm_exit_token" "$id" "$ok" > "$TTY"
     if (( ok )) && [[ $op == run ]]; then
+        [[ -n ${_yaaterm_editing-} ]] && _yaaterm_edit_op=run
         _yaaterm_next_id=$id
         zle -R
         zle .accept-line

@@ -20,6 +20,9 @@
     NSUInteger _sent;
     NSString *_shellName, *_controlDirectory, *_pendingID;
     void (^_acknowledgement)(BOOL);
+    void (^_agentReady)(BOOL);
+    NSMutableData *_earlyInput;
+    NSUInteger _noteNumber;
     BOOL _tracksCommands, _directoryCreated;
 }
 - (instancetype)init {
@@ -108,6 +111,11 @@
 }
 - (void)sendBytes:(const void *)bytes length:(size_t)length {
     if (_fd < 0 || !length) return;
+    if (_agentReady) {
+        if (!_earlyInput) _earlyInput=[NSMutableData data];
+        if (length<=65536-_earlyInput.length) [_earlyInput appendBytes:bytes length:length];
+        return;
+    }
     if (length > 4*1024*1024 - (_pending.length - _sent)) { NSBeep(); return; }
     if (!_pending) {
         ssize_t n;
@@ -153,11 +161,69 @@
     return _fd >= 0 && _pid > 0 && !_pending && tcgetpgrp(_fd) == _pid;
 }
 - (BOOL)tracksCommands { return _tracksCommands; }
+- (void)wakeEditor {
+    static const char key[]="\033[99;7~";
+    [self sendBytes:key length:sizeof(key)-1];
+}
+- (BOOL)beginAgentInput:(void (^)(BOOL))ready {
+    if (!_directoryCreated || _agentInputID || ![self shellIsForeground]) return NO;
+    NSString *identifier=NSUUID.UUID.UUIDString;
+    NSString *path=[_controlDirectory stringByAppendingPathComponent:@"mode"];
+    if (![identifier writeToFile:path atomically:YES encoding:NSASCIIStringEncoding error:nil]) return NO;
+    _agentInputID=identifier; [self wakeEditor]; _agentReady=[ready copy];
+    __weak Session *weak=self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{
+        Session *s=weak;
+        if ([s.agentInputID isEqual:identifier] && s->_agentReady) {
+            void (^callback)(BOOL)=s->_agentReady;
+            [s endAgentInput:[s shellIsForeground]]; callback(NO);
+        }
+    });
+    return YES;
+}
+- (void)agentInputReady:(NSString *)identifier {
+    if (![_agentInputID isEqual:identifier] || !_agentReady) return;
+    void (^ready)(BOOL)=_agentReady; _agentReady=nil;
+    NSData *input=_earlyInput; _earlyInput=nil; [self send:input]; ready(YES);
+}
+- (NSString *)takeAgentTask:(NSString *)identifier {
+    if (![_agentInputID isEqual:identifier]) return nil;
+    NSString *path=[_controlDirectory stringByAppendingPathComponent:[@"task-" stringByAppendingString:identifier]];
+    int fd=open(path.fileSystemRepresentation,O_RDONLY|O_CLOEXEC|O_NONBLOCK|O_NOFOLLOW);
+    if (fd<0) return nil;
+    unlink(path.fileSystemRepresentation);
+    struct stat info{};
+    char bytes[16000]; // At most 4000 Unicode scalars.
+    ssize_t n=-1;
+    if (fstat(fd,&info)==0 && S_ISREG(info.st_mode) && info.st_size>=0 && (size_t)info.st_size<=sizeof(bytes))
+        n=read(fd,bytes,(size_t)info.st_size);
+    close(fd);
+    return n>0 && n==info.st_size ? [[NSString alloc] initWithBytes:bytes length:n encoding:NSUTF8StringEncoding] : nil;
+}
+- (void)postAgentText:(NSString *)text wakeEditor:(BOOL)wake {
+    if (!_agentInputID || !text.length) return;
+    // The transcript is literal text. Discard terminal controls before handing it to ZLE.
+    static NSRegularExpression *controls=[NSRegularExpression regularExpressionWithPattern:@"[\\p{Cc}&&[^\\n\\t]]|\\p{Bidi_Control}" options:0 error:nil];
+    text=[controls stringByReplacingMatchesInString:text options:0 range:NSMakeRange(0,text.length) withTemplate:@"�"];
+    NSString *name=[NSString stringWithFormat:@"note-%@-%010lu",_agentInputID,(unsigned long)++_noteNumber];
+    if ([text writeToFile:[_controlDirectory stringByAppendingPathComponent:name] atomically:YES encoding:NSUTF8StringEncoding error:nil]
+        && wake && [self shellIsForeground]) [self wakeEditor];
+}
+- (void)endAgentInput:(BOOL)wake {
+    if (!_agentInputID) return;
+    unlink([_controlDirectory stringByAppendingPathComponent:@"mode"].fileSystemRepresentation);
+    for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:_controlDirectory error:nil])
+        if ([name hasPrefix:@"task-"] || [name hasPrefix:@"note-"])
+            unlink([_controlDirectory stringByAppendingPathComponent:name].fileSystemRepresentation);
+    _agentInputID=nil; _earlyInput=nil; _agentReady=nil;
+    if (wake && [self shellIsForeground]) [self wakeEditor];
+}
 - (void)setTracksCommands:(BOOL)enabled {
     _tracksCommands=enabled;
     if (!_controlDirectory) return;
     if (enabled && !_directoryCreated) _directoryCreated=mkdir(_controlDirectory.fileSystemRepresentation,0700)==0;
     if (!enabled && _directoryCreated) {
+        [self endAgentInput:NO];
         [self discardPendingLine]; rmdir(_controlDirectory.fileSystemRepresentation); _directoryCreated=NO;
     }
 }
@@ -180,8 +246,7 @@
     if (![[packet dataUsingEncoding:NSUTF8StringEncoding] writeToFile:path options:NSDataWritingWithoutOverwriting error:nil]) return nil;
     _pendingID=identifier; _acknowledgement=[reply copy];
     // Only the shell's line-editor widget receives the command. No Return is sent to the PTY.
-    static const char key[]="\033[99;7~";
-    [self sendBytes:key length:sizeof(key)-1];
+    [self wakeEditor];
     __weak Session *weak=self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{
         [weak acknowledgeLine:identifier accepted:NO];
@@ -189,6 +254,7 @@
     return identifier;
 }
 - (void)close {
+    [self endAgentInput:NO];
     [self discardPendingLine];
     if (_directoryCreated) { rmdir(_controlDirectory.fileSystemRepresentation); _directoryCreated=NO; }
     _controlDirectory=nil;

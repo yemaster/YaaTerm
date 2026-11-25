@@ -58,6 +58,7 @@ public:
     void resetPresentation() { context = writeTag = main.link = alt.link = 0; }
     std::function<void(std::string_view)> commandBegan;
     std::function<void(std::string_view,bool)> inputAccepted;
+    std::function<void(std::string_view,std::string_view)> agentEditor;
     std::function<void(int,std::string_view)> promptReturned;
     static bool isAgentCommand(std::string_view name);
     std::function<void(std::string_view,int,int)> commandExited;

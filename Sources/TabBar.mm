@@ -425,7 +425,7 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
     if (_agent.enabled!=enabled) _agent.enabled=enabled;
     NSColor *tint=selected ? CurrentInterfacePalette().accent : CurrentInterfacePalette().secondaryText;
     if (_agent.contentTintColor!=tint) _agent.contentTintColor=tint;
-    NSString *label=selected ? @"收起 Agent（⌘J）" : @"切换 Agent 输入（⌘J）";
+    NSString *label=selected ? @"切回终端输入（⌘J）" : @"切换 Agent 输入（⌘J）";
     if (![_agent.toolTip isEqual:label]) {
         [_agent setAccessibilityValue:@(selected)]; [_agent setAccessibilityLabel:label]; _agent.toolTip=label;
     }

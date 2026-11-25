@@ -1,6 +1,6 @@
 #import "LLMConfiguration.h"
 #import "LLMSettingsForm.h"
-#import "AssistantPanel.h"
+#import "TerminalAssistant.h"
 #import <objc/runtime.h>
 #import "SettingsView.h"
 #import "Preferences.h"
@@ -221,10 +221,10 @@ static void checkAssistant() {
     assert([files createSymbolicLinkAtPath:[dir stringByAppendingPathComponent:@"shortcut"] withDestinationPath:@"/etc/hosts" error:nil]);
     Method saved=class_getClassMethod(LLMConfiguration.class,@selector(loadSaved:));
     IMP original=method_setImplementation(saved,method_getImplementation(class_getClassMethod(FixtureConfig.class,@selector(loadFixture:))));
-    AssistantPanel *panel=[[AssistantPanel alloc] initWithDirectory:dir shell:@"zsh"];
+    TerminalAssistant *panel=[[TerminalAssistant alloc] initWithDirectory:dir shell:@"zsh"];
     __block BOOL completed=NO; __block int proposals=0;
     panel.onComplete=^(NSString *summary, BOOL failed){ assert(!failed && [summary isEqual:@"已核对"]); completed=YES; };
-    __weak AssistantPanel *owner=panel;
+    __weak TerminalAssistant *owner=panel;
     panel.onShellLine=^BOOL(NSString *cmd, BOOL execute){
         assert(execute);
         NSDictionary *outputs=@{@"command yaa-inspect list '.'":@"sample.txt",
@@ -253,27 +253,13 @@ static void checkAssistant() {
         }
         return @{@"choices":@[@{@"message":@{@"content":json}}]};
     };
-    NSTextField *input=[panel valueForKey:@"input"]; input.stringValue=@"核对文件"; click(input);
-    NSButton *action=[panel valueForKey:@"action"];
-    waitFor(^BOOL{ return !action.hidden; });
-    assert(!proposals && !completed && [action.title isEqual:@"运行"]);
-    for (CGFloat width : {620.,320.,185.}) {
-        panel.frame=NSMakeRect(0,0,width,[panel heightForWidth:width]); [panel layoutSubtreeIfNeeded];
-        assert(NSContainsRect(panel.bounds,input.frame) && NSContainsRect(panel.bounds,action.frame));
-        assert(!NSIntersectsRect(input.frame,action.frame));
-        NSString *preview=NSProcessInfo.processInfo.environment[@"YAATERM_TEST_PREVIEW"];
-        if (preview) {
-            NSWindow *window=[[NSWindow alloc] initWithContentRect:panel.bounds styleMask:NSWindowStyleMaskBorderless
-                backing:NSBackingStoreBuffered defer:YES];
-            [window.contentView addSubview:panel]; [panel layoutSubtreeIfNeeded];
-            NSBitmapImageRep *bitmap=[panel bitmapImageRepForCachingDisplayInRect:panel.bounds];
-            [panel cacheDisplayInRect:panel.bounds toBitmapImageRep:bitmap];
-            NSString *name=[NSString stringWithFormat:@"agent-%.0f.png",width];
-            [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:[preview stringByAppendingPathComponent:name] atomically:YES];
-            [panel removeFromSuperview];
-        }
-    }
-    click(action); assert(proposals==1 && panel.expectedCommand);
+    __block NSString *transcript=nil;
+    panel.onTranscript=^(NSString *line){ transcript=line; };
+    [panel submitTask:@"核对文件"];
+    waitFor(^BOOL{ return [transcript containsString:@"/run"]; });
+    assert(!proposals && !completed && [transcript containsString:@"wc -l sample.txt"]);
+    assert(!panel.diagnosisView);
+    [panel submitTask:@"/run"]; assert(proposals==1 && panel.expectedCommand);
     [panel receivedResult:@{@"command":panel.expectedCommand,@"status":@0,@"output":@"1 sample.txt"}];
     waitFor(^BOOL{ return completed; }); assert(!panel.expectedCommand);
     scriptedReply=^NSDictionary *(NSDictionary *body) {
@@ -281,16 +267,18 @@ static void checkAssistant() {
         assert([task[@"failure"][@"status"] isEqual:@127] && [task[@"mode"] isEqual:@"diagnose"]);
         return @{@"choices":@[@{@"message":@{@"content":@"{\"text\":\"拼写有误\",\"command\":\"ls\\nwhoami\"}"}}]};
     };
-    [panel explain:@{@"command":@"lss",@"status":@127,@"output":@"command not found"}];
-    waitFor(^BOOL{ return ![[panel valueForKey:@"busy"] boolValue]; });
-    assert(action.hidden && !panel.expectedCommand);
+    TerminalAssistant *diagnosis=[[TerminalAssistant alloc] initWithDirectory:dir shell:@"zsh"];
+    [diagnosis prepareForLocalTool:nil diagnosis:YES];
+    [diagnosis explain:@{@"command":@"lss",@"status":@127,@"output":@"command not found"}];
+    waitFor(^BOOL{ return ![[diagnosis valueForKey:@"busy"] boolValue]; });
+    assert([[diagnosis.diagnosisView valueForKey:@"action"] isHidden] && !diagnosis.expectedCommand);
     // A stopped request must not publish a late result or continue inspecting files.
     scriptedReply=^NSDictionary *(NSDictionary *) {
         return @{@"choices":@[@{@"message":@{@"content":@"late reply"}}]};
     };
-    completed=NO; input.stringValue=@"取消这次任务"; click(input); click([panel valueForKey:@"send"]);
+    completed=NO; [panel submitTask:@"取消这次任务"]; [panel submitTask:@"/stop"];
     [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.08]];
-    assert(!completed && [[(NSTextView *)[panel valueForKey:@"text"] string] isEqual:@"已停止"]);
+    assert(!completed && [transcript isEqual:@"已停止"]);
     scriptedReply=nil; method_setImplementation(saved,original);
     assert([files removeItemAtPath:dir error:nil]);
 }

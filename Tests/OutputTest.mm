@@ -1,9 +1,11 @@
 #import "TerminalView.h"
-#import "AssistantPanel.h"
+#import "LLMConfiguration.h"
+#import <objc/runtime.h>
 #import "TerminalOutput.h"
 #import "Preferences.h"
 #import "Session.h"
 #include <cassert>
+#include <sys/ioctl.h>
 #import <CoreText/CoreText.h>
 
 @interface TerminalView (OutputTest)
@@ -18,6 +20,27 @@
 @end
 @implementation HoverTestWindow
 - (NSPoint)mouseLocationOutsideOfEventStream { return self.pointerLocation; }
+@end
+
+// Substitute only the provider. Input, prompt hooks, shell execution and rendering are real.
+@interface PromptFixture : LLMConfiguration
++ (void)loadFixture:(void (^)(LLMConfiguration *,NSString *))completion;
+@end
+@implementation PromptFixture
++ (void)loadFixture:(void (^)(LLMConfiguration *,NSString *))completion { completion([PromptFixture new],nil); }
+- (NSURLSessionDataTask *)ask:(NSString *)input instruction:(NSString *)instruction completion:(void (^)(NSString *,NSString *))reply {
+    NSDictionary *task=[NSJSONSerialization JSONObjectWithData:[input dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+    NSArray *steps=task[@"steps"]; NSString *json=nil;
+    assert([task[@"goal"] isEqual:@"print 仅作任务 > \"$ZDOTDIR/accidental-execution\""]);
+    switch (steps.count) {
+        case 0: json=@"{\"command\":\"pwd\"}"; break;
+        case 1: assert([steps[0][@"command"] isEqual:@"/bin/pwd"] && [steps[0][@"status"] intValue]==0);
+            json=@"{\"command\":\"print -r -- APPROVED-RESULT\"}"; break;
+        default: assert(steps.count==2 && [steps.lastObject[@"output"] containsString:@"APPROVED-RESULT"]);
+            json=@"{\"text\":\"INLINE-TASK-COMPLETE\"}"; break;
+    }
+    dispatch_async(dispatch_get_main_queue(),^{ reply(json,nil); }); return nil;
+}
 @end
 
 static void until(BOOL (^predicate)(void), int line = __builtin_LINE()) {
@@ -258,20 +281,62 @@ static void testTerminalOutput(NSString *directory) {
     assert([failure[@"output"] containsString:@"yaaterm-no-such-directory"] && ![failure[@"output"] containsString:@"example.org"]);
     send(@"yaaterm_no_such_executable\r");
     until(^BOOL{ return [[[pane valueForKey:@"failure"] objectForKey:@"status"] intValue]==127; });
-    [pane toggleAssistant:nil]; AssistantPanel *panel=[pane valueForKey:@"assistant"];
-    assert(panel && NSMaxY(panel.frame)==NSHeight(pane.bounds));
-    [pane toggleAssistant:nil]; assert(panel.hidden);
-    [pane toggleAssistant:nil]; assert(!panel.hidden);
+    // The diagnostic correction remains an editable shell line until the user presses Return.
     NSString *proof=[directory stringByAppendingPathComponent:@"confirmed.txt"];
     NSString *suggestion=@"print -r verified > \"$ZDOTDIR/confirmed.txt\"";
     __block BOOL inserted=NO;
-    until(^BOOL{ if (!inserted) inserted=panel.onShellLine(suggestion,NO); return inserted; });
-    assert(!panel.onShellLine(@"echo second",YES));
+    until(^BOOL{ if (!inserted) inserted=[session submitLine:suggestion execute:NO acknowledged:nil]!=nil; return inserted; });
     until(^BOOL{ return ![session valueForKey:@"pendingID"]; });
     assert(![NSFileManager.defaultManager fileExistsAtPath:proof]);
     send(@"\r");
     until(^BOOL{ return !pane.hasFailedCommand && [NSFileManager.defaultManager fileExistsAtPath:proof]; });
     assert([[NSString stringWithContentsOfFile:proof encoding:NSUTF8StringEncoding error:nil] isEqual:@"verified\n"]);
+    send(@"repeat 48 print -r -- earlier-output; print -r -- VISIBLE-BEFORE-AGENT; printf '\\033]2;before-agent\\007'\r");
+    until(^BOOL{ return [pane.sessionTitle isEqual:@"before-agent"]; });
+    NSUInteger subviews=pane.subviews.count;
+    auto rowText=[&](int y) {
+        std::string text;
+        for (auto &cell : [pane displayRow:y]) text+=(cell.ch<128 ? (char)cell.ch : ' ');
+        return text;
+    };
+    auto snapshot=[&]() {
+        std::string text;
+        int rows=(int)((NSHeight(pane.bounds)-24)/[[pane valueForKey:@"lh"] doubleValue]);
+        for (int y=0;y<rows;++y) { text+=rowText(y); text+='\n'; }
+        return text;
+    };
+    // Preserve an existing scrollback viewport even when the caret is outside it.
+    CGEventRef wheel=CGEventCreateScrollWheelEvent(nullptr,kCGScrollEventUnitLine,1,1);
+    [pane scrollWheel:[NSEvent eventWithCGEvent:wheel]]; CFRelease(wheel);
+    NSInteger offset=[[pane valueForKey:@"offset"] integerValue]; assert(offset>0);
+    auto before=snapshot();
+    winsize originalSize{}, editingSize{};
+    int terminalFD=[[session valueForKey:@"fd"] intValue];
+    assert(ioctl(terminalFD,TIOCGWINSZ,&originalSize)==0);
+    until(^BOOL{ if (!pane.assistantVisible) [pane toggleAssistant:nil]; return pane.assistantVisible; });
+    until(^BOOL{ return ![session valueForKey:@"agentReady"]; });
+    assert(session.agentInputID && ![pane valueForKeyPath:@"assistant.diagnosisView"]);
+    assert([window firstResponder]==pane && pane.subviews.count==subviews);
+    assert(ioctl(terminalFD,TIOCGWINSZ,&editingSize)==0 &&
+           originalSize.ws_row==editingSize.ws_row && originalSize.ws_col==editingSize.ws_col);
+    assert([[pane valueForKey:@"offset"] integerValue]==offset && before==snapshot());
+    Method load=class_getClassMethod(LLMConfiguration.class,@selector(loadSaved:));
+    IMP original=method_setImplementation(load,method_getImplementation(class_getClassMethod(PromptFixture.class,@selector(loadFixture:))));
+    [pane insertText:@"print 仅作任务 > \"$ZDOTDIR/accidental-execution\"" replacementRange:NSMakeRange(NSNotFound,0)];
+    [pane doCommandBySelector:@selector(insertNewline:)];
+    auto shown=[&](const char *value){ return snapshot().find(value)!=std::string::npos; };
+    until(^BOOL{ return shown("/run"); });
+    assert(shown("VISIBLE-BEFORE-AGENT") && shown("/bin/pwd") && pane.assistantVisible);
+    assert(![NSFileManager.defaultManager fileExistsAtPath:[directory stringByAppendingPathComponent:@"accidental-execution"]]);
+    [pane insertText:@"/run" replacementRange:NSMakeRange(NSNotFound,0)];
+    [pane doCommandBySelector:@selector(insertNewline:)];
+    until(^BOOL{ return shown("INLINE-TASK-COMPLETE"); });
+    assert(shown("APPROVED-RESULT") && pane.subviews.count==subviews && window.firstResponder==pane);
+    paint(pane,@"builtin-agent-in-terminal.png");
+    method_setImplementation(load,original);
+    [pane insertText:@"/exit" replacementRange:NSMakeRange(NSNotFound,0)];
+    [pane doCommandBySelector:@selector(insertNewline:)];
+    until(^BOOL{ return !pane.assistantVisible; });
     SetTerminalPreference(BuiltInAgent,NO);
     SetTerminalPreference(AIErrorExplanations,NO);
     SetTerminalPreference(LocalAgentLauncher,NO);
@@ -291,16 +356,22 @@ printf '%s\n' '{"type":"result","result":"TASK-FINISHED"}'
     pane.agentFinished=^(TerminalView *source,NSString *tool,BOOL failed,NSString *summary) {
         assert(source==pane && [tool isEqual:@"claude"] && !failed); detail=summary;
     };
+    send(@"print -r -- saved-");
     [pane showLocalAgent:@"claude"];
     assert(pane.assistantVisible && session.tracksCommands && session==[pane valueForKey:@"session"]);
-    AssistantPanel *local=[pane valueForKey:@"assistant"];
-    NSTextField *task=[local valueForKey:@"input"]; task.stringValue=@"show progress";
-    [NSApp sendAction:task.action to:task.target from:task];
+    [pane insertText:@"show progress" replacementRange:NSMakeRange(NSNotFound,0)];
+    [pane doCommandBySelector:@selector(insertNewline:)];
     until(^BOOL{ return detail!=nil; });
     assert([detail containsString:@"$ pwd"] && [detail containsString:@"WORKING-DIRECTORY"] && [detail containsString:@"TASK-FINISHED"]);
+    assert(snapshot().find("TASK-FINISHED")!=std::string::npos);
+    paint(pane,@"agent-in-terminal.png");
     pane.agentFinished=nil;
     SetTerminalPreference(LocalAgentLauncher,NO);
     assert(!pane.assistantVisible && !session.tracksCommands);
+    send(@"draft > \"$ZDOTDIR/restored.txt\"\r");
+    NSString *restored=[directory stringByAppendingPathComponent:@"restored.txt"];
+    until(^BOOL{ return [NSFileManager.defaultManager fileExistsAtPath:restored]; });
+    assert([[NSString stringWithContentsOfFile:restored encoding:NSUTF8StringEncoding error:nil] isEqual:@"saved-draft\n"]);
     for (NSString *key in @[AIErrorExplanations,BuiltInAgent,LocalAgentLauncher]) SetTerminalPreference(key,YES);
     [pane stop];
     puts("Output: listing formats, real ls/df/git, table toggles, reflow, historical cwd and Command-hover for file, plain and OSC 8 links OK");

@@ -1,4 +1,4 @@
-#import "AssistantPanel.h"
+#import "TerminalAssistant.h"
 #import "LLMConfiguration.h"
 #import "Palette.h"
 #import "Preferences.h"
@@ -37,33 +37,25 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
     return button;
 }
 
-@implementation AssistantPanel {
-    NSTextField *_input, *_heading;
+@interface DiagnosisView : NSView
+- (instancetype)initWithOwner:(id)owner;
+- (CGFloat)heightForWidth:(CGFloat)width;
+- (void)refreshAppearance;
+- (void)showText:(NSString *)text command:(NSString *)command action:(NSString *)action;
+@end
+
+@implementation DiagnosisView {
+    NSTextField *_heading;
     NSTextView *_text;
     NSScrollView *_scroll;
-    NSButton *_send, *_close, *_action;
-    NSString *_directory, *_shell, *_goal, *_command, *_expectedCommand, *_pendingFill;
-    NSDictionary *_failure, *_previousTurn;
-    NSString *_localTool;
-    BOOL _diagnosis;
-    NSMutableArray *_steps;
-    LLMConfiguration *_profile;
-    NSURLSessionDataTask *_request;
-    NSUInteger _ticket, _turns;
-    BOOL _busy, _needsConfiguration, _retry, _copyInstead;
+    NSButton *_close, *_action;
 }
-- (instancetype)initWithDirectory:(NSString *)directory shell:(NSString *)shell {
+- (instancetype)initWithOwner:(id)owner {
     if ((self=[super initWithFrame:NSZeroRect])) {
-        _directory=[directory copy]; _shell=[shell copy]; _steps=[NSMutableArray array];
-        _heading=[NSTextField labelWithString:@"Agent"]; _heading.font=[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
-        _input=[NSTextField textFieldWithString:@""]; _input.placeholderString=@"描述任务…"; _input.delegate=self;
-        _input.bezeled=NO; _input.usesSingleLineMode=YES; [(NSTextFieldCell *)_input.cell setScrollable:YES];
-        [(NSTextFieldCell *)_input.cell setSendsActionOnEndEditing:NO];
-        _input.bordered=NO; _input.drawsBackground=NO; _input.focusRingType=NSFocusRingTypeNone;
-        [_input setAccessibilityLabel:@"Agent 任务"]; _input.target=self; _input.action=@selector(submit:);
-        _send=iconButton(@"arrow.up.circle.fill",@"发送任务",self,@selector(sendOrStop:));
-        _close=iconButton(@"xmark",@"关闭 Agent（Esc）",self,@selector(closePanel:));
-        _action=[NSButton buttonWithTitle:@"" target:self action:@selector(performAction:)];
+        _heading=[NSTextField labelWithString:@"诊断"];
+        _heading.font=[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
+        _close=iconButton(@"xmark",@"关闭诊断",owner,@selector(closePanel:));
+        _action=[NSButton buttonWithTitle:@"" target:owner action:@selector(performAction:)];
         _action.bezelStyle=NSBezelStyleRounded; _action.controlSize=NSControlSizeSmall; _action.hidden=YES;
         _scroll=[[NSScrollView alloc] initWithFrame:NSZeroRect]; _scroll.drawsBackground=NO;
         _scroll.hasVerticalScroller=YES; _scroll.autohidesScrollers=YES; _scroll.scrollerStyle=NSScrollerStyleOverlay;
@@ -72,7 +64,7 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
         _text.textContainer.widthTracksTextView=YES; _text.verticallyResizable=YES; _text.horizontallyResizable=NO;
         _text.maxSize=NSMakeSize(CGFLOAT_MAX,CGFLOAT_MAX); _text.autoresizingMask=NSViewWidthSizable;
         _scroll.documentView=_text; _scroll.hidden=YES;
-        for (NSView *view in @[_heading,_input,_send,_close,_action,_scroll]) [self addSubview:view];
+        for (NSView *view in @[_heading,_close,_action,_scroll]) [self addSubview:view];
         [self refreshAppearance];
     }
     return self;
@@ -81,8 +73,8 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
 - (void)refreshAppearance {
     const auto &colors=CurrentInterfacePalette();
     self.appearance=SchemeAppearance(PreferredColorScheme());
-    _heading.textColor=colors.secondaryText; _input.textColor=colors.text;
-    _text.textColor=colors.text; _send.contentTintColor=colors.accent; _close.contentTintColor=colors.secondaryText;
+    _heading.textColor=colors.secondaryText;
+    _text.textColor=colors.text; _close.contentTintColor=colors.secondaryText;
     self.needsDisplay=YES;
 }
 - (void)drawRect:(NSRect)dirty {
@@ -102,12 +94,7 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
     CGFloat w=NSWidth(self.bounds), h=NSHeight(self.bounds), y=MAX(0.,h-34);
     CGFloat margin=w<300 ? 6 : 12;
     _close.frame=NSMakeRect(MAX(0.,w-margin-20),y,20,24);
-    _send.frame=NSMakeRect(MAX(0.,NSMinX(_close.frame)-30),y-1,26,26);
-    _heading.hidden=w<190;
-    CGFloat labelWidth=MIN(72.,MAX(39.,ceil(_heading.intrinsicContentSize.width)));
-    _heading.frame=NSMakeRect(margin,y+3,labelWidth,20);
-    CGFloat x=_heading.hidden ? margin : NSMaxX(_heading.frame)+5;
-    _input.frame=NSMakeRect(x,y+2,MAX(0.,NSMinX(_send.frame)-x-4),24);
+    _heading.frame=NSMakeRect(margin,y+3,44,20);
     CGFloat actionHeight=_action.hidden ? 0 : 26;
     _action.frame=NSMakeRect(margin,MAX(1.,y-actionHeight-3),MIN(110.,MAX(0.,w-2*margin)),24);
     _scroll.frame=NSMakeRect(margin,8,MAX(1.,w-2*margin),MAX(1.,y-actionHeight-15));
@@ -124,56 +111,82 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
         [_text setFrameSize:NSMakeSize(width,MAX(_scroll.contentSize.height,ceil(content)))];
     }
 }
-- (BOOL)control:(NSControl *)control textShouldBeginEditing:(NSText *)editor { if (_onFocus) _onFocus(); return YES; }
-- (void)prepareForLocalTool:(NSString *)tool diagnosis:(BOOL)diagnosis {
-    _localTool=[tool copy]; _diagnosis=diagnosis;
-    _heading.stringValue=tool ?: (diagnosis ? @"诊断" : @"Agent");
-    _input.hidden=diagnosis; _send.hidden=diagnosis;
-}
-- (void)focusInput { if (!_diagnosis) [self.window makeFirstResponder:_input]; }
-- (BOOL)inputFocused { return _input.currentEditor && _input.currentEditor==self.window.firstResponder; }
-- (NSString *)expectedCommand { return _expectedCommand; }
-- (void)show:(NSString *)text command:(NSString *)command {
-    if (!_busy) _input.placeholderString=@"描述任务…";
-    _command=[command copy];
+- (void)showText:(NSString *)text command:(NSString *)command action:(NSString *)action {
     NSMutableAttributedString *body=[[NSMutableAttributedString alloc] initWithString:text ?: @""
         attributes:@{NSFontAttributeName:[NSFont systemFontOfSize:13],NSForegroundColorAttributeName:CurrentInterfacePalette().text}];
-    if (_command.length) [body appendAttributedString:[[NSAttributedString alloc] initWithString:[@"\n" stringByAppendingString:_command]
+    if (command.length) [body appendAttributedString:[[NSAttributedString alloc] initWithString:[@"\n" stringByAppendingString:command]
         attributes:@{NSFontAttributeName:PreferredTerminalFont(12,NO),NSForegroundColorAttributeName:CurrentInterfacePalette().text}]];
     [_text.textStorage setAttributedString:body]; [_text scrollRangeToVisible:NSMakeRange(0,0)];
     _scroll.hidden=!body.length;
+    _action.title=action ?: @""; _action.hidden=!action;
+    self.needsLayout=YES;
+}
+@end
+
+@implementation TerminalAssistant {
+    DiagnosisView *_diagnosis;
+    NSString *_directory, *_shell, *_goal, *_command, *_expectedCommand, *_pendingFill;
+    NSDictionary *_failure, *_previousTurn;
+    NSString *_localTool;
+    NSMutableArray *_steps;
+    LLMConfiguration *_profile;
+    NSURLSessionDataTask *_request;
+    NSUInteger _ticket, _turns;
+    BOOL _busy, _needsConfiguration, _retry, _copyInstead;
+}
+- (instancetype)initWithDirectory:(NSString *)directory shell:(NSString *)shell {
+    if ((self=[super init])) {
+        _directory=[directory copy]; _shell=[shell copy]; _steps=[NSMutableArray array];
+    }
+    return self;
+}
+- (void)prepareForLocalTool:(NSString *)tool diagnosis:(BOOL)diagnosis {
+    _localTool=[tool copy];
+    if (diagnosis) _diagnosis=[[DiagnosisView alloc] initWithOwner:self];
+}
+- (NSView *)diagnosisView { return _diagnosis; }
+- (void)refreshAppearance { [_diagnosis refreshAppearance]; }
+- (CGFloat)heightForWidth:(CGFloat)width { return [_diagnosis heightForWidth:width]; }
+- (NSString *)expectedCommand { return _expectedCommand; }
+- (void)show:(NSString *)text command:(NSString *)command {
+    _command=[command copy];
+    if (!_diagnosis) {
+        NSMutableArray *lines=[NSMutableArray arrayWithCapacity:3];
+        if (text.length) [lines addObject:text];
+        if (command.length) [lines addObject:command];
+        if (_needsConfiguration) [lines addObject:@"输入 /settings 配置 AI 服务"];
+        else if (_retry) [lines addObject:@"输入 /retry 重试"];
+        else if (command.length) [lines addObject:@"输入 /run 运行"];
+        if (lines.count && _onTranscript) _onTranscript([lines componentsJoinedByString:@"\n"]);
+        return;
+    }
     NSString *action=nil;
     if (_needsConfiguration) action=@"配置 AI 服务";
     else if (_retry) action=@"重试";
-    else if (_command.length) action=_copyInstead ? @"复制命令" : (_diagnosis ? @"填入终端" : @"运行");
-    _action.title=action ?: @""; _action.hidden=!action;
-    self.needsLayout=YES; if (_onLayout) _onLayout();
-    NSString *name=_busy ? @"停止" : @"发送任务";
-    _send.image=[NSImage imageWithSystemSymbolName:_busy ? @"stop.circle" : @"arrow.up.circle.fill" accessibilityDescription:name];
-    _send.toolTip=name; [_send setAccessibilityLabel:name];
+    else if (_command.length) action=_copyInstead ? @"复制命令" : @"填入终端";
+    [_diagnosis showText:text command:command action:action];
+    if (_onLayout) _onLayout();
 }
 - (void)cancel {
     if (_onStop) _onStop();
-    ++_ticket; [_request cancel]; _request=nil; _busy=NO; _input.placeholderString=@"描述任务…"; _expectedCommand=nil; _pendingFill=nil; _profile=nil;
+    ++_ticket; [_request cancel]; _request=nil; _busy=NO; _expectedCommand=nil; _pendingFill=nil; _profile=nil;
 }
 - (void)cancelOperation:(id)sender { [self closePanel:sender]; }
 - (void)closePanel:(id)sender { if (_onClose) _onClose(); }
-- (BOOL)control:(NSControl *)control textView:(NSTextView *)editor doCommandBySelector:(SEL)selector {
-    if (selector!=@selector(cancelOperation:)) return NO;
-    [self closePanel:nil]; return YES;
-}
-- (void)sendOrStop:(id)sender {
-    if (_busy) { [self cancel]; [self show:@"已停止" command:nil]; }
-    else [self submit:nil];
-}
-- (void)submit:(id)sender {
-    if (_busy || _diagnosis) return;
-    NSString *goal=[_input.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+- (void)submitTask:(NSString *)input {
+    NSString *goal=[input stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (_diagnosis) return;
+    if ([goal isEqual:@"/exit"]) { if (_onClose) _onClose(); return; }
+    if ([goal isEqual:@"/stop"]) { [self cancel]; _needsConfiguration=_retry=NO; [self show:@"已停止" command:nil]; return; }
+    if (_busy) { if (_onTranscript) _onTranscript(@"任务执行中，输入 /stop 停止"); return; }
+    if ([_command length] && [goal isEqual:@"/run"]) { [self performAction:nil]; return; }
+    if (_retry && [goal isEqual:@"/retry"]) { [self performAction:nil]; return; }
+    if (_needsConfiguration && [goal isEqual:@"/settings"]) { [self performAction:nil]; return; }
     if (!goal.length) return;
     if (![_shell isEqual:@"zsh"]) { [self show:@"请在 zsh 分屏中运行 Agent。" command:nil]; return; }
     if (goal.length>4000) { [self show:@"任务描述超过 4000 字。" command:nil]; return; }
-    _input.stringValue=@"";
     if (_localTool) {
+        _retry=_needsConfiguration=NO;
         [self runLine:[NSString stringWithFormat:@"command yaa-agent %@ %@",_localTool,shellArgument(goal)]];
     } else [self begin:goal failure:nil];
 }
@@ -189,12 +202,12 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
     [self loadAndAsk];
 }
 - (void)loadAndAsk {
-    _needsConfiguration=_retry=NO; _busy=YES; _input.placeholderString=@"正在处理…";
+    _needsConfiguration=_retry=NO; _busy=YES;
     [self show:_failure ? @"正在分析错误…" : nil command:nil];
     NSUInteger ticket=++_ticket;
-    __weak AssistantPanel *weak=self;
+    __weak TerminalAssistant *weak=self;
     [LLMConfiguration loadSaved:^(LLMConfiguration *profile, NSString *error){
-        AssistantPanel *panel=weak;
+        TerminalAssistant *panel=weak;
         if (!panel || panel->_ticket!=ticket) return;
         if (!profile) {
             panel->_busy=NO; panel->_needsConfiguration=YES;
@@ -214,9 +227,9 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
     NSString *input=[[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:context options:0 error:nil]
                                            encoding:NSUTF8StringEncoding];
     NSUInteger ticket=_ticket;
-    __weak AssistantPanel *weak=self;
+    __weak TerminalAssistant *weak=self;
     _request=[_profile ask:input instruction:instructions completion:^(NSString *reply,NSString *error){
-        AssistantPanel *panel=weak;
+        TerminalAssistant *panel=weak;
         if (!panel || panel->_ticket!=ticket) return;
         panel->_request=nil;
         if (error) { panel->_busy=NO; panel->_retry=YES; [panel show:error command:nil]; }
@@ -283,7 +296,6 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
     }
     _expectedCommand=command; _busy=YES;
     [self show:nil command:nil]; // Leave the terminal transcript visible while the PTY runs.
-    _input.placeholderString=@"执行中…";
     if (!_onShellLine || !_onShellLine(command,YES)) [self lineAcknowledged:NO];
 }
 - (void)lineAcknowledged:(BOOL)accepted {
@@ -294,12 +306,11 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
     }
     if (accepted) return;
     NSString *command=_expectedCommand;
-    _expectedCommand=nil; _busy=NO; _input.placeholderString=@"描述任务…";
+    _expectedCommand=nil; _busy=NO;
     [self show:@"当前提示符正在使用。" command:command];
 }
 - (void)receivedResult:(NSDictionary *)result {
     if (!_expectedCommand) return;
-    _input.placeholderString=@"描述任务…";
     if (![_expectedCommand isEqual:result[@"command"]]) {
         _expectedCommand=nil; _profile=nil; _busy=NO; [self show:@"运行了其他命令，本次跟进已结束。" command:nil]; return;
     }
@@ -314,7 +325,7 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
     NSString *directory=_currentDirectory ? _currentDirectory() : nil;
     if (directory) _directory=[directory copy];
     [_steps addObject:result]; _busy=YES;
-    _input.placeholderString=@"正在查看结果…"; [self show:nil command:nil]; [self ask];
+    [self show:nil command:nil]; [self ask];
 }
 - (void)dealloc { [_request cancel]; }
 @end

@@ -4,6 +4,12 @@
 @property (copy) void (^onData)(const void *, size_t);
 @property (copy) void (^onExit)(void);
 @property (nonatomic) BOOL tracksCommands;
+@property (readonly) NSString *agentInputID;
+- (BOOL)beginAgentInput:(void (^)(BOOL))ready;
+- (void)agentInputReady:(NSString *)identifier;
+- (NSString *)takeAgentTask:(NSString *)identifier;
+- (void)endAgentInput:(BOOL)wakeEditor;
+- (void)postAgentText:(NSString *)text wakeEditor:(BOOL)wake;
 - (NSString *)submitLine:(NSString *)line execute:(BOOL)execute acknowledged:(void (^)(BOOL))reply;
 - (void)acknowledgeLine:(NSString *)identifier accepted:(BOOL)accepted;
 - (void)discardPendingLine;
