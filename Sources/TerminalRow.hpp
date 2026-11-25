@@ -27,7 +27,8 @@ static_assert(sizeof(Cell) == 16);
 struct Row : std::vector<Cell> {
     using std::vector<Cell>::vector;
     // Nonzero when the next row continues this one. A wide glyph can wrap one column early.
-    int wrapAt = 0;
+    uint16_t wrapAt = 0; // Screen width is limited to 1000 columns.
+    uint16_t agentStamp = 0; // Nonzero block ID in the upper bits, output (vs. echo) in bit zero.
     int written = 0; // Includes explicit trailing spaces, excludes untouched padding.
     int used() const {
         int n = (int)size();

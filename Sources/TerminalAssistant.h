@@ -10,6 +10,7 @@
 - (void)lineAcknowledged:(BOOL)accepted;
 @property (copy) void (^onComplete)(NSString *summary, BOOL failed);
 @property (copy) void (^onTranscript)(NSString *text);
+@property (copy) void (^onActivity)(BOOL busy);
 @property (readonly) NSString *expectedCommand;
 @property (readonly) NSView *diagnosisView;
 - (instancetype)initWithDirectory:(NSString *)directory shell:(NSString *)shell;

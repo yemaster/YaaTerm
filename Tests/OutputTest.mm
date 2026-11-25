@@ -26,17 +26,28 @@
 @interface PromptFixture : LLMConfiguration
 + (void)loadFixture:(void (^)(LLMConfiguration *,NSString *))completion;
 @end
+static dispatch_block_t firstAgentReply;
 @implementation PromptFixture
 + (void)loadFixture:(void (^)(LLMConfiguration *,NSString *))completion { completion([PromptFixture new],nil); }
 - (NSURLSessionDataTask *)ask:(NSString *)input instruction:(NSString *)instruction completion:(void (^)(NSString *,NSString *))reply {
     NSDictionary *task=[NSJSONSerialization JSONObjectWithData:[input dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
     NSArray *steps=task[@"steps"]; NSString *json=nil;
+    if ([task[@"goal"] isEqual:@"syntax-check"]) {
+        if (!steps.count) reply(@"{\"command\":\")\"}",nil);
+        else {
+            assert(steps.count==1 && [steps[0][@"status"] intValue]!=0 && [steps[0][@"output"] containsString:@"parse error"]);
+            reply(@"{\"text\":\"SYNTAX-REPORTED\"}",nil);
+        }
+        return nil;
+    }
     assert([task[@"goal"] isEqual:@"print 仅作任务 > \"$ZDOTDIR/accidental-execution\""]);
     switch (steps.count) {
-        case 0: json=@"{\"command\":\"pwd\"}"; break;
+        case 0: { firstAgentReply=^{ reply(@"{\"command\":\"pwd\"}",nil); }; return nil; }
         case 1: assert([steps[0][@"command"] isEqual:@"/bin/pwd"] && [steps[0][@"status"] intValue]==0);
-            json=@"{\"command\":\"print -r -- APPROVED-RESULT\"}"; break;
-        default: assert(steps.count==2 && [steps.lastObject[@"output"] containsString:@"APPROVED-RESULT"]);
+            json=@"{\"command\":\"print APPROVED-RESULT; read -r answer; print -- $answer; false\"}"; break;
+        default: assert(steps.count==2 && [steps.lastObject[@"output"] containsString:@"APPROVED-RESULT"] &&
+                        [steps.lastObject[@"output"] containsString:@"from-stdin"] && [steps.lastObject[@"status"] intValue]==1);
+            assert(![steps.lastObject[@"output"] containsString:@"read -r"]);
             json=@"{\"text\":\"INLINE-TASK-COMPLETE\"}"; break;
     }
     dispatch_async(dispatch_get_main_queue(),^{ reply(json,nil); }); return nil;
@@ -62,6 +73,12 @@ static NSBitmapImageRep *paint(TerminalView *pane, NSString *name) {
     [pane drawRect:pane.bounds];
     for (NSView *view in pane.subviews)
         if ([view isKindOfClass:NSButton.class]) [[(NSButton *)view cell] drawWithFrame:view.frame inView:pane];
+        else if ([view isKindOfClass:NSProgressIndicator.class]) {
+            [NSGraphicsContext saveGraphicsState];
+            CGContextTranslateCTM(cg,NSMinX(view.frame),NSMinY(view.frame));
+            [view drawRect:view.bounds];
+            [NSGraphicsContext restoreGraphicsState];
+        }
     [NSGraphicsContext restoreGraphicsState];
     NSString *dir = NSProcessInfo.processInfo.environment[@"YAATERM_TEST_PREVIEW"];
     if (name && dir) [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
@@ -291,7 +308,7 @@ static void testTerminalOutput(NSString *directory) {
     send(@"\r");
     until(^BOOL{ return !pane.hasFailedCommand && [NSFileManager.defaultManager fileExistsAtPath:proof]; });
     assert([[NSString stringWithContentsOfFile:proof encoding:NSUTF8StringEncoding error:nil] isEqual:@"verified\n"]);
-    send(@"repeat 48 print -r -- earlier-output; print -r -- VISIBLE-BEFORE-AGENT; printf '\\033]2;before-agent\\007'\r");
+    send(@"repeat 48 print -r -- earlier-output; print -r -- VISIBLE-BEFORE-AGENT; PROMPT=$'THEME-TOP\\nLEFT> '; RPROMPT='THEME-RIGHT'; printf '\\033]2;before-agent\\007'\r");
     until(^BOOL{ return [pane.sessionTitle isEqual:@"before-agent"]; });
     NSUInteger subviews=pane.subviews.count;
     auto rowText=[&](int y) {
@@ -325,18 +342,52 @@ static void testTerminalOutput(NSString *directory) {
     [pane insertText:@"print 仅作任务 > \"$ZDOTDIR/accidental-execution\"" replacementRange:NSMakeRange(NSNotFound,0)];
     [pane doCommandBySelector:@selector(insertNewline:)];
     auto shown=[&](const char *value){ return snapshot().find(value)!=std::string::npos; };
+    auto stampOf=[&](const char *prefix) -> int {
+        int rows=(NSHeight(pane.bounds)-24)/[[pane valueForKey:@"lh"] doubleValue];
+        for (int y=rows-1;y>=0;--y) if (rowText(y).rfind(prefix,0)==0) return [pane displayRow:y].agentStamp;
+        return -1;
+    };
+    until(^BOOL{ return firstAgentReply && [pane valueForKey:@"agentProgress"] && stampOf("Agent > ")==0; });
+    assert(stampOf("Agent > print")==0 && !shown("THEME-TOP") && !shown("THEME-RIGHT"));
+    paint(pane,@"agent-waiting.png");
+    [pane insertText:@"draft" replacementRange:NSMakeRange(NSNotFound,0)];
+    until(^BOOL{ return shown("Agent > draft"); });
+    firstAgentReply(); firstAgentReply=nil;
     until(^BOOL{ return shown("/run"); });
+    assert(![pane valueForKey:@"agentProgress"] && stampOf("Agent > draft")==0);
+    send(@"\025"); // Clear the preserved Agent draft before confirming the proposed command.
     assert(shown("VISIBLE-BEFORE-AGENT") && shown("/bin/pwd") && pane.assistantVisible);
     assert(![NSFileManager.defaultManager fileExistsAtPath:[directory stringByAppendingPathComponent:@"accidental-execution"]]);
     [pane insertText:@"/run" replacementRange:NSMakeRange(NSNotFound,0)];
     [pane doCommandBySelector:@selector(insertNewline:)];
+    until(^BOOL{ return stampOf("APPROVED-RESULT")>0 && [pane valueForKey:@"agentProgress"]; });
+    int echo=stampOf("$ print APPROVED"), output=stampOf("APPROVED-RESULT");
+    assert(echo>0 && !(echo&1) && output==(echo|1) && stampOf("$ /bin/pwd")!=echo);
+    NSSize paneSize=pane.frame.size;
+    [pane setFrameSize:NSMakeSize(paneSize.width-42,paneSize.height)];
+    assert(stampOf("APPROVED-RESULT")==output);
+    paint(pane,@"agent-running.png");
+    [pane insertText:@"from-stdin" replacementRange:NSMakeRange(NSNotFound,0)];
+    [pane doCommandBySelector:@selector(insertNewline:)];
     until(^BOOL{ return shown("INLINE-TASK-COMPLETE"); });
+    assert(![pane valueForKey:@"agentProgress"] && stampOf("INLINE-TASK-COMPLETE")==0);
     assert(shown("APPROVED-RESULT") && pane.subviews.count==subviews && window.firstResponder==pane);
     paint(pane,@"builtin-agent-in-terminal.png");
+    send(@"syntax-check\r");
+    until(^BOOL{ return [[pane valueForKeyPath:@"assistant.command"] isEqual:@")"]; });
+    send(@"/run\r");
+    until(^BOOL{ return shown("SYNTAX-REPORTED") && ![pane valueForKey:@"agentProgress"]; });
+    send(@"print 仅作任务 > \"$ZDOTDIR/accidental-execution\"\r");
+    until(^BOOL{ return firstAgentReply && [pane valueForKey:@"agentProgress"]; });
+    send(@"/stop\r");
+    until(^BOOL{ return ![pane valueForKey:@"agentProgress"]; });
+    firstAgentReply(); firstAgentReply=nil;
+    assert(![pane valueForKeyPath:@"assistant.expectedCommand"]);
     method_setImplementation(load,original);
     [pane insertText:@"/exit" replacementRange:NSMakeRange(NSNotFound,0)];
     [pane doCommandBySelector:@selector(insertNewline:)];
     until(^BOOL{ return !pane.assistantVisible; });
+    until(^BOOL{ return stampOf("LEFT> ")==0 && shown("THEME-RIGHT") && shown("THEME-TOP"); });
     SetTerminalPreference(BuiltInAgent,NO);
     SetTerminalPreference(AIErrorExplanations,NO);
     SetTerminalPreference(LocalAgentLauncher,NO);

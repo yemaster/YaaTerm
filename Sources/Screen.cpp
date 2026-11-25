@@ -165,6 +165,7 @@ void Screen::reflowMain(int w, int h) {
     };
     for (int y=0; y<=last; ++y) {
         const Row &src = b.rows[y];
+        out.agentStamp = src.agentStamp;
         int end = src.wrapAt ? src.wrapAt : src.used();
         auto insertion = [&](const Cursor &c) { return c.x + (c.wrapPending ? 1 : 0); };
         if (b.cursor.y == y) end = std::max(end,insertion(b.cursor));
@@ -180,7 +181,7 @@ void Screen::reflowMain(int w, int h) {
         };
         for (int x=0; x<end;) {
             int width = src[x].width == 2 && x+1<end ? 2 : 1;
-            if (filled+width > w) emit(true);
+            if (filled+width > w) { emit(true); out.agentStamp = src.agentStamp; }
             place(x); out[filled++] = src[x++];
             if (width == 2) { place(x); out[filled++] = src[x++]; }
         }
@@ -221,12 +222,12 @@ void Screen::scroll(int first, int last, bool up, bool save) {
             spare = remember(std::move(rows[first]));
         } else spare = std::move(rows[first]);
         std::move(rows.begin() + first + 1, rows.begin() + last + 1, rows.begin() + first);
-        spare.assign(cols, blank()); spare.wrapAt = spare.written = 0;
+        spare.assign(cols, blank()); spare.agentStamp = spare.wrapAt = spare.written = 0;
         rows[last] = std::move(spare);
     } else {
         spare = std::move(rows[last]);
         std::move_backward(rows.begin() + first, rows.begin() + last, rows.begin() + last + 1);
-        spare.assign(cols, blank()); spare.wrapAt = spare.written = 0;
+        spare.assign(cols, blank()); spare.agentStamp = spare.wrapAt = spare.written = 0;
         rows[first] = std::move(spare);
     }
 }
@@ -234,6 +235,7 @@ void Screen::scroll(int first, int last, bool up, bool save) {
 void Screen::lineFeed(int wrapAt) {
     auto &b = active();
     b.rows[b.cursor.y].wrapAt = wrapAt;
+    if (agentStamp && !alternate) b.rows[b.cursor.y].agentStamp = agentStamp;
     b.cursor.wrapPending = false;
     if (b.cursor.y == b.bottom) scroll(b.top, b.bottom, true, true);
     else b.cursor.y = std::min(b.cursor.y + 1, height - 1);
@@ -241,6 +243,7 @@ void Screen::lineFeed(int wrapAt) {
 void Screen::erase(Row &r, int first, int end) {
     if (first >= end) return;
     if (end == cols) r.wrapAt = 0;
+    if (first == 0 && end == cols) r.agentStamp = 0;
     if (first > 0 && r[first].width == 0) --first;
     if (end < cols && r[end].width == 0) ++end;
     if (end >= r.written) r.written = std::min(r.written,first);
@@ -275,6 +278,7 @@ bool Screen::extendEmoji(char32_t ch) {
     dest[x] = glyph; dest[x].width = 2;
     dest[x+1] = Cell{glyph.style,0,0,0,(uint32_t)glyph.tag};
     dest.written = std::max(dest.written,x+2);
+    dest.agentStamp = alternate ? 0 : agentStamp;
     cursor.wrapPending = x+2 == cols;
     cursor.x = std::min(cols-1,x+2);
     damage(cursor.y,cursor.y);
@@ -313,6 +317,7 @@ void Screen::writeGlyph(char32_t ch, int width, uint32_t mark) {
     if (r[b.cursor.x].width != 1 || (b.cursor.x + width < cols && r[b.cursor.x + width].width == 0))
         erase(r, b.cursor.x, b.cursor.x + width);
     r.written = std::max(r.written,b.cursor.x+width);
+    r.agentStamp = alternate ? 0 : agentStamp;
     r[b.cursor.x] = Cell{b.cursor.pen, ch, mark, (uint8_t)width, writeTag};
     if (width == 2) r[b.cursor.x + 1] = Cell{b.cursor.pen, 0, 0, 0, writeTag};
     b.cursor.wrapPending = b.cursor.x + width >= cols;
@@ -825,6 +830,7 @@ void Screen::feed(std::string_view bytes) {
                     c = bytes[pos];
                 } while (c>=32 && c<127);
                 line.written = cursor.x;
+                line.agentStamp = alternate ? 0 : agentStamp;
                 if (cursor.x==cols) { cursor.wrapPending = true; --cursor.x; }
                 graphicAdjacent = true;
                 damage(cursor.y,cursor.y);

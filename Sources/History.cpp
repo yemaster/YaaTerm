@@ -7,7 +7,11 @@
 
 namespace yaa {
 namespace {
-struct Header { uint16_t columns, used, wrapAt; };
+struct Header {
+    uint16_t columns, used, wrapAt : 15, hasAgentStamp : 1;
+    size_t bytes() const { return sizeof(Header) + hasAgentStamp*sizeof(uint16_t); }
+};
+static_assert(sizeof(Header) == 6);
 FILE *temporaryFile() {
     FILE *file = std::tmpfile();  // Unlinked, private to this session.
     if (file && fcntl(fileno(file),F_SETFD,FD_CLOEXEC) < 0) { fclose(file); return nullptr; }
@@ -32,12 +36,13 @@ void HistoryArchive::dropReadCache() {
 bool HistoryArchive::append(const Row &row) {
     if (ioFailed) return false;
     if (pendingCount == rowsPerPage && !commit()) { ioFailed = true; return false; }
-    Header header{(uint16_t)row.size(),(uint16_t)row.used(),(uint16_t)row.wrapAt};
+    Header header{(uint16_t)row.size(),(uint16_t)row.used(),row.wrapAt,row.agentStamp!=0};
     size_t start = pending.size(), cells = header.used*sizeof(Cell);
     pendingOffsets[pendingCount++] = (uint32_t)start;
-    pending.resize(start + sizeof(header) + cells);
+    pending.resize(start + header.bytes() + cells);
     memcpy(pending.data()+start,&header,sizeof(header));
-    if (cells) memcpy(pending.data()+start+sizeof(header),row.data(),cells);
+    if (header.hasAgentStamp) memcpy(pending.data()+start+sizeof(header),&row.agentStamp,sizeof(row.agentStamp));
+    if (cells) memcpy(pending.data()+start+header.bytes(),row.data(),cells);
     return true;
 }
 bool HistoryArchive::commit() {
@@ -64,7 +69,7 @@ bool HistoryArchive::load(int64_t page) const {
     }
     Location loc{};
     if (!readAt(index.get(),&loc,sizeof(loc),page*sizeof(loc)) || !loc.bytes ||
-        loc.bytes > loc.plainBytes || loc.plainBytes > rowsPerPage*(sizeof(Header)+1000*sizeof(Cell))) return false;
+        loc.bytes > loc.plainBytes || loc.plainBytes > rowsPerPage*(sizeof(Header)+sizeof(uint16_t)+1000*sizeof(Cell))) return false;
     decoded.resize(loc.plainBytes);
     cachedPage = cachedRow = -1;
     if (loc.bytes == loc.plainBytes) {
@@ -81,7 +86,7 @@ bool HistoryArchive::load(int64_t page) const {
         if (cursor + sizeof(h) > decoded.size()) return false;
         memcpy(&h,decoded.data()+cursor,sizeof(h));
         if (h.used > h.columns || h.columns > 1000 || h.wrapAt > h.columns) return false;
-        offset = (uint32_t)cursor; cursor += sizeof(h)+h.used*sizeof(Cell);
+        offset = (uint32_t)cursor; cursor += h.bytes()+h.used*sizeof(Cell);
     }
     if (cursor != decoded.size()) return false;
     cachedPage = page;
@@ -97,12 +102,14 @@ const Row &HistoryArchive::rowAt(int64_t index) const {
     const uint8_t *record;
     if (page == pageCount) record = pending.data()+pendingOffsets[slot];
     else {
-        if (!load(page)) { ioFailed = true; cachedRow = -1; result.clear(); result.wrapAt = result.written = 0; return result; }
+        if (!load(page)) { ioFailed = true; cachedRow = -1; result = Row{}; return result; }
         record = decoded.data()+offsets[slot];
     }
     Header h; memcpy(&h,record,sizeof(h));
     result.assign(h.columns,Cell{}); result.wrapAt = h.wrapAt; result.written = h.used;
-    memcpy(result.data(),record+sizeof(h),h.used*sizeof(Cell));
+    result.agentStamp = 0;
+    if (h.hasAgentStamp) memcpy(&result.agentStamp,record+sizeof(h),sizeof(result.agentStamp));
+    memcpy(result.data(),record+h.bytes(),h.used*sizeof(Cell));
     if (ioFailed && index+1 == size()) result.wrapAt = 0;
     cachedRow = index;
     return result;

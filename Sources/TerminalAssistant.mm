@@ -148,6 +148,11 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
 - (void)refreshAppearance { [_diagnosis refreshAppearance]; }
 - (CGFloat)heightForWidth:(CGFloat)width { return [_diagnosis heightForWidth:width]; }
 - (NSString *)expectedCommand { return _expectedCommand; }
+- (void)setBusy:(BOOL)busy {
+    if (_busy == busy) return;
+    _busy = busy;
+    if (_onActivity) _onActivity(busy);
+}
 - (void)show:(NSString *)text command:(NSString *)command {
     _command=[command copy];
     if (!_diagnosis) {
@@ -169,7 +174,7 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
 }
 - (void)cancel {
     if (_onStop) _onStop();
-    ++_ticket; [_request cancel]; _request=nil; _busy=NO; _expectedCommand=nil; _pendingFill=nil; _profile=nil;
+    ++_ticket; [_request cancel]; _request=nil; self.busy=NO; _expectedCommand=nil; _pendingFill=nil; _profile=nil;
 }
 - (void)cancelOperation:(id)sender { [self closePanel:sender]; }
 - (void)closePanel:(id)sender { if (_onClose) _onClose(); }
@@ -202,7 +207,7 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
     [self loadAndAsk];
 }
 - (void)loadAndAsk {
-    _needsConfiguration=_retry=NO; _busy=YES;
+    _needsConfiguration=_retry=NO; self.busy=YES;
     [self show:_failure ? @"正在分析错误…" : nil command:nil];
     NSUInteger ticket=++_ticket;
     __weak TerminalAssistant *weak=self;
@@ -210,7 +215,7 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
         TerminalAssistant *panel=weak;
         if (!panel || panel->_ticket!=ticket) return;
         if (!profile) {
-            panel->_busy=NO; panel->_needsConfiguration=YES;
+            panel.busy=NO; panel->_needsConfiguration=YES;
             [panel show:error ?: @"尚未配置 AI 服务。" command:nil]; return;
         }
         panel->_profile=profile; [panel ask];
@@ -218,7 +223,7 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
 }
 - (void)ask {
     if (++_turns>8) {
-        _busy=NO; _profile=nil; [self show:@"已达到本次任务的 8 步上限。" command:nil]; return;
+        self.busy=NO; _profile=nil; [self show:@"已达到本次任务的 8 步上限。" command:nil]; return;
     }
     NSMutableDictionary *context=[@{@"goal":_goal,@"mode":_failure ? @"diagnose" : @"agent",
         @"directory":_directory ?: @"",@"shell":_shell ?: @"",@"steps":_steps} mutableCopy];
@@ -232,7 +237,7 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
         TerminalAssistant *panel=weak;
         if (!panel || panel->_ticket!=ticket) return;
         panel->_request=nil;
-        if (error) { panel->_busy=NO; panel->_retry=YES; [panel show:error command:nil]; }
+        if (error) { panel.busy=NO; panel->_retry=YES; [panel show:error command:nil]; }
         else [panel acceptReply:reply];
     }];
 }
@@ -246,14 +251,14 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
     id object=[NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
     NSDictionary *result=[object isKindOfClass:NSDictionary.class] ? object : nil;
     if (!result && ([json hasPrefix:@"{"] || [json hasPrefix:@"["])) {
-        _busy=NO; _retry=YES; [self show:@"建议格式不完整。" command:nil]; return;
+        self.busy=NO; _retry=YES; [self show:@"建议格式不完整。" command:nil]; return;
     }
     NSString *action=result[@"action"], *path=result[@"path"];
     if (!_failure && ([action isEqual:@"list"] || [action isEqual:@"read"]) && [path isKindOfClass:NSString.class]) {
         if (path.length>512 || [path hasPrefix:@"/"] ||
             [path rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location!=NSNotFound ||
             [path rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location!=NSNotFound) {
-            _busy=NO; [self show:@"项目路径无效。" command:nil]; return;
+            self.busy=NO; [self show:@"项目路径无效。" command:nil]; return;
         }
         [self runLine:[NSString stringWithFormat:@"command yaa-inspect %@ %@",action,shellArgument(path)]];
         return;
@@ -266,7 +271,7 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
         NSString *automatic=automaticCommand(command);
         if (automatic) { [self runLine:automatic]; return; }
     }
-    _busy=NO;
+    self.busy=NO;
     if (!text.length && !command.length) text=result ? @"模型未给出可用建议。" : bounded(reply,5000);
     [self show:text command:command];
     if (!_failure && !command.length && text.length && (!result || [result[@"text"] isKindOfClass:NSString.class])) {
@@ -292,9 +297,9 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
 - (void)runLine:(NSString *)command {
     NSString *cwd=_currentDirectory ? _currentDirectory() : nil;
     if (!_localTool && cwd && _directory && ![cwd isEqual:_directory]) {
-        _busy=NO; _profile=nil; [self show:@"工作目录已改变，请重新提交任务。" command:nil]; return;
+        self.busy=NO; _profile=nil; [self show:@"工作目录已改变，请重新提交任务。" command:nil]; return;
     }
-    _expectedCommand=command; _busy=YES;
+    _expectedCommand=command; self.busy=YES;
     [self show:nil command:nil]; // Leave the terminal transcript visible while the PTY runs.
     if (!_onShellLine || !_onShellLine(command,YES)) [self lineAcknowledged:NO];
 }
@@ -306,17 +311,17 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
     }
     if (accepted) return;
     NSString *command=_expectedCommand;
-    _expectedCommand=nil; _busy=NO;
+    _expectedCommand=nil; self.busy=NO;
     [self show:@"当前提示符正在使用。" command:command];
 }
 - (void)receivedResult:(NSDictionary *)result {
     if (!_expectedCommand) return;
     if (![_expectedCommand isEqual:result[@"command"]]) {
-        _expectedCommand=nil; _profile=nil; _busy=NO; [self show:@"运行了其他命令，本次跟进已结束。" command:nil]; return;
+        _expectedCommand=nil; _profile=nil; self.busy=NO; [self show:@"运行了其他命令，本次跟进已结束。" command:nil]; return;
     }
     _expectedCommand=nil;
     if (_localTool || [result[@"status"] integerValue]==130 || [result[@"status"] integerValue]==128+SIGTSTP) {
-        _busy=NO; _profile=nil;
+        self.busy=NO; _profile=nil;
         NSInteger status=[result[@"status"] integerValue];
         [self show:status ? [NSString stringWithFormat:@"已结束 · %ld",(long)status] : nil command:nil];
         if (_localTool && _onComplete) _onComplete(result[@"output"] ?: @"",status!=0);
@@ -324,7 +329,7 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
     }
     NSString *directory=_currentDirectory ? _currentDirectory() : nil;
     if (directory) _directory=[directory copy];
-    [_steps addObject:result]; _busy=YES;
+    [_steps addObject:result]; self.busy=YES;
     [self show:nil command:nil]; [self ask];
 }
 - (void)dealloc { [_request cancel]; }

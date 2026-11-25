@@ -34,9 +34,33 @@ static void checkFreeze() {
     feedBoth("\033[?47l"); check();
 }
 
+static void checkAgentFrames() {
+    static_assert(sizeof(Row)==sizeof(std::vector<Cell>)+8);
+    Screen s(12,5);
+    s.setHistoryLimit(1);
+    s.feed("ordinary\r\n");
+    s.beginAgentEcho(); s.feed("$ list\r\n"); s.beginAgentOutput();
+    s.feed("one\r\n\r\nabcdefghijklmnop\r\n");
+    auto output=s.agentOutputStamp();
+    s.resize(8,8);
+    s.feed("\033[?1049h\033[Halt");
+    assert(!s.row(0).agentStamp);
+    s.feed("\033[?1049l");
+    for (int i=0;i<80;++i) s.feed("row\r\n");
+    s.endAgentBlock(); s.feed("Agent > ");
+    s.freeze(); s.thaw();
+    assert(s.archivedRows()>32 && !s.lineAt(0).agentStamp && s.lineAt(1).agentStamp==(output & ~1));
+    int64_t prompt=s.historySize()+s.y();
+    for (int64_t i=2;i<prompt;++i) assert(s.lineAt(i).agentStamp==output);
+    assert(!s.lineAt(prompt).agentStamp);
+    s.feed("\033[2J");
+    for (int y=0;y<s.height;++y) assert(!s.row(y).agentStamp);
+}
+
 int main() {
     setlocale(LC_CTYPE,"en_US.UTF-8");
     checkFreeze();
+    checkAgentFrames();
     Screen s(6,3);
     s.feed("abc\033[2D!"); assert(s.row(0)[1].ch == '!');
     s.feed("\033[2J\033[H\033[38;2;11;22;33mA");

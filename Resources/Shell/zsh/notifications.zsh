@@ -157,7 +157,7 @@ _yaaterm_command_end() {
     local code=$?
     emulate -L zsh
     [[ -d $_yaaterm_ai_dir ]] && builtin printf '\033]777;yaaterm-end;%s;%d;%s\007' "$_yaaterm_exit_token" "$code" "$_yaaterm_ai_line" > "$TTY"
-    _yaaterm_ai_line=''
+    _yaaterm_ai_line='' _yaaterm_next_id=''
     _yaaterm_prompt_context
     local name=$_yaaterm_job
     _yaaterm_job=''
@@ -200,8 +200,15 @@ _yaaterm_input_widget() {
     [[ -f $_yaaterm_ai_dir/line ]] || return 0
     { IFS= builtin read -r id && IFS= builtin read -r op && IFS= builtin read -r line } < "$_yaaterm_ai_dir/line" || return 0
     zmodload -F zsh/files b:zf_rm && zf_rm -- "$_yaaterm_ai_dir/line" 2>/dev/null || return 0
-    if [[ -z $BUFFER && ( $CONTEXT == start || -n ${_yaaterm_editing-} ) && -n $line && $line != *[[:cntrl:]]* && $op == (run|fill) ]]; then
+    local agent_run=0
+    [[ -n ${_yaaterm_editing-} && $op == run ]] && agent_run=1
+    if [[ ( -z $BUFFER || $agent_run == 1 ) && ( $CONTEXT == start || -n ${_yaaterm_editing-} ) && -n $line && $line != *[[:cntrl:]]* && $op == (run|fill) ]]; then
         ok=1
+        if (( agent_run )) && [[ -n $BUFFER ]]; then
+            typeset -g _yaaterm_agent_draft=$BUFFER _yaaterm_agent_caret=$CURSOR
+            BUFFER='' CURSOR=0
+            zle -R
+        fi
         if [[ $line == 'command yaa-agent '* ]]; then
             builtin hash "yaa-agent=$_yaaterm_agents_dir/yaa-agent"
         elif [[ $line == 'command yaa-inspect '* ]]; then

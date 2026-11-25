@@ -56,6 +56,15 @@ public:
         if (!alternate && !main.link) writeTag = tag;
     }
     void resetPresentation() { context = writeTag = main.link = alt.link = 0; }
+    // Only the pane owning an acknowledged shell command can start a block.
+    void beginAgentEcho() {
+        lastAgentBlock = lastAgentBlock % 32767 + 1;
+        agentStamp = lastAgentBlock << 1;
+    }
+    void beginAgentOutput() { if (agentStamp) agentStamp |= 1; }
+    void endAgentBlock() { agentStamp = 0; }
+    uint16_t agentOutputStamp() const { return agentStamp; }
+    bool hasAgentBlocks() const { return lastAgentBlock != 0; }
     std::function<void(std::string_view)> commandBegan;
     std::function<void(std::string_view,bool)> inputAccepted;
     std::function<void(std::string_view,std::string_view)> agentEditor;
@@ -91,6 +100,7 @@ private:
         for (auto &r : alt.rows) visit(r);
     }
     Buffer main, alt;
+    uint16_t agentStamp = 0, lastAgentBlock = 0;
     uint32_t context = 0, writeTag = 0;
     std::deque<Row> history;
     std::unique_ptr<HistoryArchive> archive;

@@ -91,6 +91,7 @@ static NSString *cellText(const Row &row, int start, int end, bool trim) {
     Row _fragment;
     FindBar *_findBar;
     TerminalAssistant *_assistant;
+    NSProgressIndicator *_agentProgress;
     NSDictionary *_agentResult;
     NSButton *_fixButton;
     NSDictionary *_failure;
@@ -498,6 +499,7 @@ struct PaintedLine {
 }
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
+    if (_agentProgress) [self observeAgentProgress];
     if (self.window && _wakeOnActivity) [self wakeForActivity];
     if (_focusWindow || (_screen && _screen->focusReporting)) [self trackWindowFocus];
     [self setLinkModifierDown:self.window.isKeyWindow && (NSEvent.modifierFlags & NSEventModifierFlagCommand)];
@@ -561,6 +563,7 @@ struct PaintedLine {
     _session.tracksCommands=enabled;
     if (!enabled) {
         _screen->commandBegan={}; _screen->promptReturned={}; _screen->inputAccepted={};
+        _screen->endAgentBlock();
         _insideCommand=_runningOwned=NO; _issuedID=nil; return;
     }
     if (_screen->commandBegan) return;
@@ -569,6 +572,7 @@ struct PaintedLine {
         TerminalView *v=weak; if (!v) return;
         v->_insideCommand=YES;
         v->_runningOwned=v->_issuedID && identifier==(v->_issuedID.UTF8String ?: "");
+        if (v->_runningOwned) v->_screen->beginAgentOutput(); else v->_screen->endAgentBlock();
         v->_commandGeneration=v->_screen->historyGeneration;
         v->_commandRow=v->_screen->historySize()+v->_screen->y(); v->_commandColumn=v->_screen->x();
         if (v->_failure) [v clearFailure];
@@ -577,6 +581,7 @@ struct PaintedLine {
     _screen->inputAccepted=[weak](std::string_view idBytes,bool accepted) {
         TerminalView *v=weak; if (!v) return;
         NSString *identifier=[[NSString alloc] initWithBytes:idBytes.data() length:idBytes.size() encoding:NSASCIIStringEncoding];
+        if (accepted && [v->_issuedID isEqual:identifier]) v->_screen->beginAgentEcho();
         [v->_session acknowledgeLine:identifier accepted:accepted];
     };
 }
@@ -585,22 +590,31 @@ struct PaintedLine {
 }
 - (BOOL)hasFailedCommand { return _failure!=nil; }
 - (void)promptReturned:(int)status line:(std::string_view)line {
-    BOOL began=_insideCommand, owned=_runningOwned;
+    uint16_t outputStamp=_screen->agentOutputStamp();
+    // Syntax errors return to precmd without ever calling preexec.
+    BOOL owned=_runningOwned || (!_insideCommand && _issuedID && outputStamp);
+    BOOL began=_insideCommand || owned;
+    _screen->endAgentBlock();
     _insideCommand=_runningOwned=NO;
     if (owned) _issuedID=nil;
     BOOL awaiting=owned && _assistant.expectedCommand!=nil;
-    BOOL failed=_diagnostics && status && status!=130 && status!=128+SIGTSTP && !line.empty();
+    BOOL failed=_diagnostics && !awaiting && status && status!=130 && status!=128+SIGTSTP && !line.empty();
     if (!began || (!awaiting && !failed)) return;
     NSString *command=awaiting ? _assistant.expectedCommand :
         [[NSString alloc] initWithBytes:line.data() length:line.size() encoding:NSUTF8StringEncoding] ?: @"";
     NSMutableArray *rows=[NSMutableArray array];
-    if (_commandGeneration==_screen->historyGeneration) {
+    if ((awaiting && outputStamp) || _commandGeneration==_screen->historyGeneration) {
         int64_t end=_screen->historySize()+_screen->y();
+        int64_t start=awaiting && outputStamp ? 0 : _commandRow;
         NSUInteger used=0;
-        for (int64_t index=end; index>=std::max(_commandRow,end-23) && used<3072; --index) {
+        for (int64_t index=end; index>=std::max(start,end-23) && used<3072; --index) {
             const Row &row=_screen->lineAt(index);
+            if (awaiting && outputStamp && row.agentStamp!=outputStamp) {
+                if (index==end && !_screen->x()) continue;
+                break;
+            }
             int last=index==end ? std::min(_screen->x(),(int)row.size()) : std::min(row.written,(int)row.size());
-            int first=index==_commandRow ? std::min(last,_commandColumn) : 0;
+            int first=_commandGeneration==_screen->historyGeneration && index==_commandRow && !outputStamp ? std::min(last,_commandColumn) : 0;
             NSString *text=cellText(row,first,last,true);
             if (row.wrapAt==0 && rows.count) text=[text stringByAppendingString:@"\n"];
             if (text.length) { [rows addObject:text]; used+=text.length; }
@@ -631,6 +645,46 @@ struct PaintedLine {
     return height;
 }
 - (BOOL)assistantVisible { return _assistant!=nil; }
+- (void)positionAgentProgress {
+    const int row=_screen->y(), col=_screen->x();
+    CGFloat x=NSWidth(self.bounds)-15;
+    int visibleRow=row;
+    if (_offset) visibleRow=0;
+    else if (!_screen->alternate && col+3 < _screen->cols && col >= _screen->row(row).written)
+        x=insetX+col*_cw+5;
+    NSPoint origin=NSMakePoint(floor(x),floor(insetY+visibleRow*_lh+(_lh-14)/2));
+    if (!NSEqualPoints(_agentProgress.frame.origin,origin)) [_agentProgress setFrameOrigin:origin];
+}
+- (void)updateAgentAnimation:(NSNotification *)note {
+    BOOL visible=(self.window.occlusionState & NSWindowOcclusionStateVisible) != 0;
+    if (visible && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion)
+        [_agentProgress startAnimation:nil];
+    else [_agentProgress stopAnimation:nil];
+}
+- (void)observeAgentProgress {
+    NSNotificationCenter *center=NSNotificationCenter.defaultCenter;
+    [center removeObserver:self name:NSWindowDidChangeOcclusionStateNotification object:nil];
+    if (self.window) [center addObserver:self selector:@selector(updateAgentAnimation:)
+                                   name:NSWindowDidChangeOcclusionStateNotification object:self.window];
+    [self updateAgentAnimation:nil];
+}
+- (void)setAgentBusy:(BOOL)busy {
+    if (busy) {
+        _agentProgress=[[NSProgressIndicator alloc] initWithFrame:NSMakeRect(0,0,14,14)];
+        _agentProgress.style=NSProgressIndicatorStyleSpinning;
+        _agentProgress.controlSize=NSControlSizeSmall;
+        _agentProgress.indeterminate=YES; _agentProgress.displayedWhenStopped=YES;
+        [_agentProgress setAccessibilityLabel:@"Agent 运行中"];
+        [self positionAgentProgress]; [self addSubview:_agentProgress];
+        [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self selector:@selector(updateAgentAnimation:)
+            name:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification object:nil];
+        [self observeAgentProgress];
+    } else {
+        [NSNotificationCenter.defaultCenter removeObserver:self name:NSWindowDidChangeOcclusionStateNotification object:nil];
+        [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:self name:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification object:nil];
+        [_agentProgress stopAnimation:nil]; [_agentProgress removeFromSuperview]; _agentProgress=nil;
+    }
+}
 - (BOOL)builtInAgentVisible { return self.assistantVisible && [_panelFeature isEqual:BuiltInAgent]; }
 - (void)closeAssistant {
     if (!_assistant) return;
@@ -684,6 +738,7 @@ struct PaintedLine {
         if (diagnostic) {
             [self addSubview:_assistant.diagnosisView]; [self sizeTerminal];
         } else {
+            _assistant.onActivity=^(BOOL busy) { [weak setAgentBusy:busy]; };
             _assistant.onTranscript=^(NSString *text) {
                 TerminalView *v=weak;
                 if (v) [v->_session postAgentText:text wakeEditor:!v->_insideCommand && v->_screen->bracketPaste && !v->_screen->alternate];
@@ -797,8 +852,12 @@ struct PaintedLine {
     if (!self.window || (historyOnly && !reset)) return;
     if (full) self.needsDisplay = YES;
     else {
-        [self setNeedsDisplayInRect:NSMakeRect(0, insetY+_screen->dirtyFirst*_lh,self.bounds.size.width,
-                                               (_screen->dirtyLast-_screen->dirtyFirst+1)*_lh)];
+        int first=_screen->dirtyFirst, last=_screen->dirtyLast;
+        if (_screen->hasAgentBlocks() && !_screen->alternate) {
+            if (first>0 && _screen->row(first-1).agentStamp) --first;
+            if (last+1<_screen->height && _screen->row(last+1).agentStamp) ++last;
+        }
+        [self setNeedsDisplayInRect:NSMakeRect(0,insetY+first*_lh,self.bounds.size.width,(last-first+1)*_lh)];
     }
 }
 - (TextPoint)displayPoint:(int)y {
@@ -815,6 +874,7 @@ struct PaintedLine {
     if ((int)row.size() <= _screen->cols) return row;
     int end = fragmentEnd(row,p.column,_screen->cols);
     _fragment.assign(row.begin()+p.column,row.begin()+end);
+    _fragment.agentStamp = row.agentStamp;
     _fragment.written = end-p.column;
     _fragment.wrapAt = (end < row.used() || row.wrapAt) ? end-p.column : 0;
     return _fragment;
@@ -841,6 +901,40 @@ struct PaintedLine {
     if (end < _screen->cols && end < (int)row.size() && row[end].width == 0) ++end;
     return NSMakeRange(start,end-start);
 }
+// Retired rows may wrap into several visible fragments. Look one fragment past
+// the dirty region so repainting or scrolling never introduces a seam in the frame.
+- (BOOL)isAgentRow:(int)y {
+    TextPoint p;
+    if (y < 0) {
+        p=[self displayPoint:0];
+        if (!p.row && !p.column) return 0;
+        p=moveDisplayRow(*_screen,p,false);
+    } else p=[self displayPoint:y];
+    // A program may be waiting for stdin on its next, still empty, line.
+    if (_screen->agentOutputStamp() && p.row==_screen->historySize()+_screen->y())
+        return YES;
+    return p.row < _screen->historySize()+_screen->height && _screen->lineAt(p.row).agentStamp!=0;
+}
+- (void)drawAgentFramesFrom:(int)first to:(int)end {
+    BOOL fullScreen=_screen->alternate;
+    [[foreground() colorWithAlphaComponent:.32] setStroke];
+    CGFloat pixel=1./(self.window.backingScaleFactor ?: 1.);
+    for (int y=first; y<end;) {
+        if (!fullScreen && ![self isAgentRow:y]) { ++y; continue; }
+        int start=y++;
+        while (y<end && (fullScreen || [self isAgentRow:y])) ++y;
+        BOOL above=fullScreen ? start>0 : [self isAgentRow:start-1];
+        BOOL below=fullScreen ? y<_screen->height : [self isAgentRow:y];
+        NSRect clip=NSMakeRect(0,insetY+start*_lh,NSWidth(self.bounds),(y-start)*_lh);
+        NSRect box=NSInsetRect(clip,8+pixel/2,pixel/2);
+        if (above) { box.origin.y-=6; box.size.height+=6; }
+        if (below) box.size.height+=6;
+        [NSGraphicsContext saveGraphicsState]; NSRectClip(clip);
+        NSBezierPath *path=[NSBezierPath bezierPathWithRoundedRect:box xRadius:4 yRadius:4];
+        path.lineWidth=pixel; [path stroke];
+        [NSGraphicsContext restoreGraphicsState];
+    }
+}
 - (void)drawRect:(NSRect)dirty {
     if (_wakeOnActivity) [self wakeForActivity];
     CGContextRef ctx = NSGraphicsContext.currentContext.CGContext;
@@ -850,9 +944,11 @@ struct PaintedLine {
     PaintedLine listingCache;
     BOOL selecting = _anchor >= 0 && _extent != _anchor;
     BOOL present = _tables && !_screen->alternate && !selecting && !_findBar.field.stringValue.length;
+    BOOL framed = _screen->agentOutputStamp()!=0;
     for (int y = first; y < end; ++y) {
         BOOL header = NO, drawn = NO;
         const Row *source = &[self displayRow:y];
+        if (source->agentStamp) framed=YES;
         if (present) {
             uint32_t tag = source->empty() ? 0 : source->front().tag;
             if (tag & 3) {
@@ -946,6 +1042,8 @@ struct PaintedLine {
             x = next;
         }
     }
+    if (framed) [self drawAgentFramesFrom:first to:end];
+    if (_agentProgress) [self positionAgentProgress];
     if (!_offset && !_ended && self.window.firstResponder == self && (_screen->cursorVisible || _marked.length)) {
         CGFloat x = insetX+_screen->x()*_cw, y = insetY+_screen->y()*_lh;
         if (_marked.length) [_marked drawAtPoint:NSMakePoint(x,y) withAttributes:@{NSFontAttributeName:_regular,
