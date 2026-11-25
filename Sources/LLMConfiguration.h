@@ -12,5 +12,6 @@ typedef NS_ENUM(NSInteger, LLMAPIFormat) { LLMChatCompletions, LLMResponses, LLM
 // Both callbacks run on the main queue. A nil configuration without an error means first use.
 + (void)loadSaved:(void (^)(LLMConfiguration *, NSString *error))completion;
 - (void)save:(void (^)(NSString *error))completion;
+- (NSURLSessionDataTask *)ask:(NSString *)input instruction:(NSString *)instruction completion:(void (^)(NSString *text, NSString *error))completion;
 - (NSURLSessionDataTask *)testConnection:(void (^)(NSString *error))completion;
 @end

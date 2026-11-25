@@ -21,7 +21,7 @@ static NSString *keychainError(OSStatus status) {
     return [NSString stringWithFormat:@"无法访问钥匙串（%d），请检查钥匙串是否已解锁。",(int)status];
 }
 
-static NSString *responseError(NSHTTPURLResponse *response, NSData *data, LLMAPIFormat format) {
+static NSString *responseError(NSHTTPURLResponse *response, id json, LLMAPIFormat format) {
     NSInteger status = response.statusCode;
     if (status < 200 || status >= 300) {
         NSString *hint;
@@ -32,7 +32,6 @@ static NSString *responseError(NSHTTPURLResponse *response, NSData *data, LLMAPI
         else hint = @"请检查 API 格式、模型和服务状态。";
         return [NSString stringWithFormat:@"HTTP %ld · %@",(long)status,hint];
     }
-    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     if (![json isKindOfClass:NSDictionary.class]) return @"服务返回了非预期内容，请检查 API 地址。";
     if (json[@"error"] && json[@"error"] != NSNull.null) return @"模型服务返回错误，请检查模型和权限。";
     BOOL valid = NO;
@@ -52,14 +51,34 @@ static NSString *responseError(NSHTTPURLResponse *response, NSData *data, LLMAPI
     return valid ? nil : @"响应与所选 API 格式不符，或模型未完成请求。";
 }
 
-// One short-lived delegate per explicit test. Bound memory even if the URL serves a large file.
-@interface LLMConnectionTest : NSObject <NSURLSessionDataDelegate>
+static NSString *assistantText(NSDictionary *json, LLMAPIFormat format) {
+    id parts;
+    if (format == LLMChatCompletions) {
+        parts = [json[@"choices"] firstObject][@"message"][@"content"];
+        if ([parts isKindOfClass:NSString.class]) return trim(parts);
+    } else if (format == LLMResponses) {
+        for (id item in json[@"output"]) {
+            if ([item isKindOfClass:NSDictionary.class] && [item[@"type"] isEqual:@"message"] &&
+                [item[@"role"] isEqual:@"assistant"]) { parts = item[@"content"]; break; }
+        }
+    } else parts = json[@"content"];
+    NSMutableArray *texts = [NSMutableArray array];
+    if ([parts isKindOfClass:NSArray.class]) for (id part in parts) {
+        if (![part isKindOfClass:NSDictionary.class] || ![part[@"text"] isKindOfClass:NSString.class]) continue;
+        if ([part[@"type"] isEqual:format == LLMResponses ? @"output_text" : @"text"]) [texts addObject:part[@"text"]];
+    }
+    return trim([texts componentsJoinedByString:@"\n"]);
+}
+
+// One short-lived delegate per user request. Bound memory even if the URL serves a large file.
+@interface LLMExchange : NSObject <NSURLSessionDataDelegate>
 @property LLMAPIFormat format;
 @property NSMutableData *bytes;
 @property BOOL tooLarge;
-@property (copy) void (^completion)(NSString *);
+@property BOOL wantsText;
+@property (copy) void (^completion)(NSString *, NSString *);
 @end
-@implementation LLMConnectionTest
+@implementation LLMExchange
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task willPerformHTTPRedirection:(NSHTTPURLResponse *)response
         newRequest:(NSURLRequest *)request completionHandler:(void (^)(NSURLRequest *))reply {
     reply(nil);
@@ -74,8 +93,22 @@ static NSString *responseError(NSHTTPURLResponse *response, NSData *data, LLMAPI
     if (self.tooLarge) message = @"响应过大，请检查 API 地址。";
     else if (error.code == NSURLErrorTimedOut) message = @"连接超时，请检查服务地址或网络。";
     else if (error) message = @"未能连接服务，请检查网络、地址和 TLS 证书。";
-    else message = responseError((NSHTTPURLResponse *)task.response,self.bytes,self.format);
-    dispatch_async(dispatch_get_main_queue(), ^{ self.completion(message); });
+    NSString *text = nil;
+    if (!message) {
+        id json = [NSJSONSerialization JSONObjectWithData:self.bytes options:0 error:nil];
+        message = responseError((NSHTTPURLResponse *)task.response,json,self.format);
+        if (!message && self.wantsText) {
+            BOOL incomplete = (self.format==LLMResponses && [json[@"status"] isEqual:@"incomplete"]) ||
+                (self.format==LLMChatCompletions && [[[json[@"choices"] firstObject] objectForKey:@"finish_reason"] isEqual:@"length"]) ||
+                (self.format==LLMAnthropicMessages && [json[@"stop_reason"] isEqual:@"max_tokens"]);
+            if (incomplete) message = @"模型回复超过长度限制，请缩小任务范围。";
+            else {
+                text = assistantText(json,self.format);
+                if (!text.length) message = @"模型没有返回文本。";
+            }
+        }
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{ self.completion(text,message); });
     [session finishTasksAndInvalidate];
 }
 @end
@@ -122,18 +155,25 @@ static NSString *responseError(NSHTTPURLResponse *response, NSData *data, LLMAPI
     return nil;
 }
 - (NSURLRequest *)connectionTestRequest {
+    return [self requestWithInstruction:nil input:@"Reply OK." limit:16];
+}
+- (NSURLRequest *)requestWithInstruction:(NSString *)instruction input:(NSString *)prompt limit:(NSInteger)limit {
     if (self.validationError) return nil;
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:self.requestURL];
     request.HTTPMethod = @"POST";
     [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
     [request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
-    NSString *prompt = @"Reply OK.";
     NSMutableDictionary *body = [@{@"model":_model} mutableCopy];
     if (_format == LLMResponses) {
-        body[@"input"] = prompt; body[@"max_output_tokens"] = @16; body[@"store"] = @NO;
+        body[@"input"] = prompt; if (instruction) body[@"instructions"] = instruction;
+        body[@"max_output_tokens"] = @(limit); body[@"store"] = @NO;
     } else {
-        body[@"messages"] = @[@{@"role":@"user", @"content":prompt}];
-        body[_format == LLMChatCompletions ? @"max_completion_tokens" : @"max_tokens"] = @16;
+        NSDictionary *user = @{@"role":@"user", @"content":prompt};
+        if (instruction && _format == LLMChatCompletions)
+            body[@"messages"] = @[@{@"role":@"system", @"content":instruction},user];
+        else body[@"messages"] = @[user];
+        if (instruction && _format == LLMAnthropicMessages) body[@"system"] = instruction;
+        body[_format == LLMChatCompletions ? @"max_completion_tokens" : @"max_tokens"] = @(limit);
     }
     if (_format == LLMAnthropicMessages) {
         [request setValue:_apiKey forHTTPHeaderField:@"x-api-key"];
@@ -151,14 +191,20 @@ static NSString *responseError(NSHTTPURLResponse *response, NSData *data, LLMAPI
     return config;
 }
 - (NSURLSessionDataTask *)testConnection:(void (^)(NSString *))completion {
-    NSURLRequest *request = self.connectionTestRequest;
+    return [self performRequest:self.connectionTestRequest wantsText:NO completion:^(NSString *, NSString *error){ completion(error); }];
+}
+- (NSURLSessionDataTask *)ask:(NSString *)input instruction:(NSString *)instruction completion:(void (^)(NSString *,NSString *))completion {
+    return [self performRequest:[self requestWithInstruction:instruction input:input limit:2048] wantsText:YES completion:completion];
+}
+- (NSURLSessionDataTask *)performRequest:(NSURLRequest *)request wantsText:(BOOL)wantsText completion:(void (^)(NSString *,NSString *))completion {
     if (!request) {
-        dispatch_async(dispatch_get_main_queue(), ^{ completion(self.validationError); });
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil,self.validationError); });
         return nil;
     }
-    LLMConnectionTest *probe = [LLMConnectionTest new];
-    probe.format = _format; probe.bytes = [NSMutableData data]; probe.completion = completion;
+    LLMExchange *probe = [LLMExchange new];
+    probe.wantsText = wantsText; probe.format = _format; probe.bytes = [NSMutableData data]; probe.completion = completion;
     NSURLSessionConfiguration *config = [self testSessionConfiguration];
+    if (wantsText) { config.timeoutIntervalForRequest = 90; config.timeoutIntervalForResource = 120; }
     NSURLSession *session = [NSURLSession sessionWithConfiguration:config delegate:probe delegateQueue:nil];
     NSURLSessionDataTask *task = [session dataTaskWithRequest:request];
     [task resume]; return task;
