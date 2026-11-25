@@ -188,7 +188,7 @@ static void checkFilePreview(TerminalView *pane, Session *session, NSString *dir
     assert(first.codeLine == 1 && first[0].ch == 'd' && first[0].style.fg == yaa::CodeColor+5);
     assert([pane displayRow:y+1].codeLine == 2 && [pane displayRow:y+2].codeLine == 3);
     CGFloat cellWidth = [[pane valueForKey:@"cw"] doubleValue];
-    assert([pane textOriginForRow:y] == 16+6*cellWidth && ![pane displayRow:y+3].codeLine);
+    assert(fabs([pane textOriginForRow:y]-(16+7*cellWidth)) < .01 && ![pane displayRow:y+3].codeLine);
     paint(pane,@"cat-code.png");
     NSString *partial = [directory stringByAppendingPathComponent:@"last-line.py"];
     assert([@"def greet():" writeToFile:partial atomically:YES encoding:NSUTF8StringEncoding error:nil]);
@@ -231,8 +231,10 @@ static void checkFilePreview(TerminalView *pane, Session *session, NSString *dir
         uint32_t tag = [pane displayRow:i].codeLine;
         if ((tag & ~yaa::CodeContinuation) != 1000) continue;
         CGFloat origin = [pane textOriginForRow:i];
-        assert(origin == 16+6*cellWidth);
-        NSPoint point = NSMakePoint(origin+((tag & yaa::CodeContinuation) ? 1.5 : 10.5)*cellWidth,[pane topOfRow:i]+3);
+        assert(fabs(origin-(16+7*cellWidth)) < .01);
+        // The last cell before the wrap is still part of the link, right up to its edge.
+        CGFloat column = tag & yaa::CodeContinuation ? 1.5 : [pane displayRow:i].wrapAt-.25;
+        NSPoint point = NSMakePoint(origin+column*cellWidth,[pane topOfRow:i]+3);
         assert([[[pane linkAtPoint:point] absoluteString] isEqual:@"https://example.org/reference/terminal/gutter"]);
         if (tag & yaa::CodeContinuation) continuation = YES; else firstLine = YES;
     }

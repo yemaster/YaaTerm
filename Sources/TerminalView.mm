@@ -20,6 +20,10 @@
 
 using namespace yaa;
 static constexpr CGFloat insetX = 16, insetY = 12;
+static CGFloat textOrigin(int gutter, CGFloat cellWidth) {
+    // Use the pane's spare right inset for the extra gap. Wrapped lines keep their column count.
+    return gutter ? insetX + gutter*cellWidth + std::min(cellWidth,insetX-4) : insetX;
+}
 static NSColor *rgb(int v) {
     return [NSColor colorWithSRGBRed:((v>>16)&255)/255. green:((v>>8)&255)/255. blue:(v&255)/255. alpha:1];
 }
@@ -1102,7 +1106,7 @@ struct PaintedLine {
     return _fragment;
 }
 - (CGFloat)textOriginForRow:(int)y {
-    return insetX + (_codeOutput ? codeGutterColumns([self displayRow:y].codeLine,_screen->cols)*_cw : 0);
+    return textOrigin(_codeOutput ? codeGutterColumns([self displayRow:y].codeLine,_screen->cols) : 0,_cw);
 }
 - (NSRange)findColumnsInRow:(int)y {
     if (!_findHit) return {};
@@ -1236,12 +1240,13 @@ struct PaintedLine {
         CGFloat py = [self topOfRow:y];
         int gutter = _codeOutput ? codeGutterColumns(row.codeLine,_screen->cols) : 0;
         int count = std::min((int)row.size(),_screen->cols-gutter);
-        CGFloat origin = insetX + gutter*_cw;
+        CGFloat origin = textOrigin(gutter,_cw);
         if (gutter && !(row.codeLine & CodeContinuation)) {
             if (!gutterAttributes) gutterAttributes = @{NSFontAttributeName:_regular,NSLigatureAttributeName:@0,
                 NSForegroundColorAttributeName:CurrentInterfacePalette().secondaryText};
             NSString *label = [@(row.codeLine) stringValue];
-            [label drawAtPoint:NSMakePoint(origin-(label.length+1)*_cw,py+_textOffsetY) withAttributes:gutterAttributes];
+            CGFloat labelX = insetX + (gutter-1-(CGFloat)label.length)*_cw;
+            [label drawAtPoint:NSMakePoint(labelX,py+_textOffsetY) withAttributes:gutterAttributes];
         }
 
         // Paint backgrounds independently of glyph shaping, then overlay the selection once.
@@ -1351,11 +1356,12 @@ struct PaintedLine {
     if (stable) *stable = NSZeroRect;
     if (!_webLinks && !_fileLinks) return nil;
     int y=[self rowAtY:p.y];
-    CGFloat origin = [self textOriginForRow:y];
-    if (!NSPointInRect(p,NSMakeRect(origin,[self topOfRow:y],insetX+_cw*_screen->cols-origin,_lh))) return nil;
+    const auto &row = [self displayRow:y];
+    int gutter = _codeOutput ? codeGutterColumns(row.codeLine,_screen->cols) : 0;
+    CGFloat origin = textOrigin(gutter,_cw);
+    if (!NSPointInRect(p,NSMakeRect(origin,[self topOfRow:y],(_screen->cols-gutter)*_cw,_lh))) return nil;
     int x = int((p.x-origin)/_cw);
     TextPoint start = [self displayPoint:y], point = {start.row,start.column+x};
-    const auto &row = [self displayRow:y];
     uint32_t leading = row.empty() ? 0 : row.front().tag;
     uint32_t tag = x < (int)row.size() ? row[x].tag : 0;
     OutputReference *rec = [_references record:tag];
