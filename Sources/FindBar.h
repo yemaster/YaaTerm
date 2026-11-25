@@ -6,5 +6,6 @@
 - (void)queryDidChange;
 - (void)showStatus:(NSString *)text hasMatch:(BOOL)hasMatch;
 - (void)applyPalette;
+- (void)refreshShortcuts;
 - (CGFloat)heightForWidth:(CGFloat)width;
 @end

@@ -1,6 +1,7 @@
 #import "TabWorkspace.h"
 #import "TaskNotices.h"
 #import "Preferences.h"
+#import "Shortcuts.h"
 #import "Palette.h"
 #import <QuartzCore/QuartzCore.h>
 #include <algorithm>
@@ -226,6 +227,7 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
     BOOL _slotsDirty;
     NSMutableArray<NSString *> *_titles;
     NSMutableArray<TabItem *> *_items; // Reusable on-screen slots. Overflow tabs only need a title.
+    NSString *_agentOnTip, *_agentOffTip;
     NSButton *_add, *_more, *_agent, *_settings, *_bell;
     TaskNoticePresenter *_notices;
     TabHighlight *_highlight;
@@ -239,9 +241,9 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
         _highlight = [[TabHighlight alloc] initWithFrame:NSZeroRect];
         _highlight.hidden = YES;
         [self addSubview:_highlight];
-        _add = symbolButton(@"plus",@"新建标签页（⌘T）",self,@selector(add:));
+        _add = symbolButton(@"plus",@"新建标签页",self,@selector(add:));
         _more = symbolButton(@"chevron.down",@"所有标签页",self,@selector(showAll:));
-        _settings = symbolButton(@"gearshape",@"设置（⌘,）",self,@selector(openSettings:));
+        _settings = symbolButton(@"gearshape",@"设置",self,@selector(openSettings:));
         [_settings setAccessibilityRole:NSAccessibilityRadioButtonRole];
         [_settings setAccessibilityLabel:@"设置"];
         _bell = symbolButton(@"bell",@"通知",self,@selector(showNotices:));
@@ -250,7 +252,8 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
             [self addSubview:b];
         }
         _bell.symbolConfiguration = _settings.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:14 weight:NSFontWeightRegular];
-        [self agentPreference:nil];
+        [self shortcutChanged:nil]; [self agentPreference:nil];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(shortcutChanged:) name:TerminalPreferenceChanged object:ShortcutPreferences];
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(agentPreference:) name:TerminalPreferenceChanged object:BuiltInAgent];
         [self updateBell];
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(noticesChanged:) name:TaskNoticesChanged object:nil];
@@ -408,10 +411,15 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
 }
 - (void)setFrameSize:(NSSize)size { [super setFrameSize:size]; self.needsLayout = YES; }
 - (void)add:(id)sender { if (_onAdd) _onAdd(); }
+- (void)shortcutChanged:(NSNotification *)note {
+    _add.toolTip=ShortcutTip(@"新建标签页",NewTabKey); _settings.toolTip=ShortcutTip(@"设置",SettingsKey);
+    _agentOnTip=ShortcutTip(@"切换 Agent 输入",AgentKey); _agentOffTip=ShortcutTip(@"切回终端输入",AgentKey);
+    [self updateAssistantState];
+}
 - (void)agentPreference:(NSNotification *)note {
     if ([TerminalPreferences() boolForKey:BuiltInAgent]) {
         if (!_agent) {
-            _agent=symbolButton(@"sparkles",@"切换 Agent 输入（⌘J）",self,@selector(toggleAssistant:));
+            _agent=symbolButton(@"sparkles",_agentOnTip,self,@selector(toggleAssistant:));
             _agent.symbolConfiguration=_add.symbolConfiguration; [self addSubview:_agent];
         }
         [self updateAssistantState];
@@ -425,7 +433,7 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
     if (_agent.enabled!=enabled) _agent.enabled=enabled;
     NSColor *tint=selected ? CurrentInterfacePalette().accent : CurrentInterfacePalette().secondaryText;
     if (_agent.contentTintColor!=tint) _agent.contentTintColor=tint;
-    NSString *label=selected ? @"切回终端输入（⌘J）" : @"切换 Agent 输入（⌘J）";
+    NSString *label=selected ? _agentOffTip : _agentOnTip;
     if (![_agent.toolTip isEqual:label]) {
         [_agent setAccessibilityValue:@(selected)]; [_agent setAccessibilityLabel:label]; _agent.toolTip=label;
     }

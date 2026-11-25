@@ -10,6 +10,7 @@
 #include <optional>
 #import "Session.h"
 #import "Preferences.h"
+#import "Shortcuts.h"
 #import "Wallpaper.h"
 #import <QuartzCore/CALayer.h>
 #import "Palette.h"
@@ -539,7 +540,17 @@ struct PaintedLine {
     if (_fontChangePending) return;
     [self updateFont]; [self sizeTerminal]; self.needsDisplay = YES;
 }
+- (void)updateReviewKeys {
+    NSString *confirm=ShortcutValue(ApproveKey)==Shortcut(ApproveKey).standard ? @"Enter" : ShortcutLabel(ApproveKey);
+    NSString *stop=ShortcutValue(StopAgentKey)==Shortcut(StopAgentKey).standard ? @"Ctrl+C" : ShortcutLabel(StopAgentKey);
+    [_session setReviewKeys:[NSString stringWithFormat:@"%@ / %@",confirm,stop] wake:_awaitingApproval];
+}
 - (void)preferenceChanged:(NSNotification *)note {
+    if ([note.object isEqual:ShortcutPreferences]) {
+        if (_failure) [self updateFixButton];
+        if (_session.agentInputID) [self updateReviewKeys];
+        [_findBar refreshShortcuts]; return;
+    }
     if ([note.object isEqual:AgentFramePadding]) {
         _framePadding=PreferredAgentFramePadding();
         if (!_wakeOnActivity && _screen->hasAgentBlocks()) { [self updateFrameSpacing]; self.needsDisplay=YES; }
@@ -715,7 +726,7 @@ struct PaintedLine {
     FixState state=_fixState;
     _fixButton.title=titles[state];
     _fixButton.image=[NSImage imageWithSystemSymbolName:icons[state] accessibilityDescription:nil];
-    _fixButton.toolTip=state==AnalyzingError ? @"取消分析（⌘⇧E）" : [titles[state] stringByAppendingString:@"（⌘⇧E）"];
+    _fixButton.toolTip=ShortcutTip(state==AnalyzingError ? @"取消分析" : titles[state],ExplainKey);
     [_fixButton setAccessibilityLabel:_fixButton.toolTip];
     _fixButton.enabled=state!=SendingExplanation;
     _fixButton.imagePosition=NSImageLeading;
@@ -909,6 +920,7 @@ struct PaintedLine {
         if (![_session beginAgentInputWithColor:PreferredAgentPromptColor() directoryColor:PreferredAgentDirectoryColor() ready:^(BOOL ready) {
             if (!ready) { [weak closeAssistant]; NSBeep(); }
         }]) { [self closeAssistant]; NSBeep(); return nil; }
+        [self updateReviewKeys];
         [self.window makeFirstResponder:self];
     }
     if (_didFocus) _didFocus(self);
@@ -1724,30 +1736,51 @@ struct PaintedLine {
 - (void)controlTextDidChange:(NSNotification *)note {
     if (note.object == _findBar.field && ![(NSTextView *)_findBar.field.currentEditor hasMarkedText]) [self restartFind];
 }
+- (BOOL)handleFindKey:(NSEvent *)event {
+    if (!_findBar || !_findBar.field.currentEditor || self.window.firstResponder!=_findBar.field.currentEditor ||
+        [(NSTextView *)_findBar.field.currentEditor hasMarkedText]) return NO;
+    if (MatchesShortcut(event,SearchNextKey)) [self findNext:nil];
+    else if (MatchesShortcut(event,SearchPreviousKey)) [self findPrevious:nil];
+    else if (MatchesShortcut(event,SearchCloseKey)) [self closeFind:nil];
+    else return NO;
+    return YES;
+}
 - (BOOL)control:(NSControl *)control textView:(NSTextView *)editor doCommandBySelector:(SEL)action {
-    if (control != _findBar.field || editor.hasMarkedText) return NO;
-    if (action == @selector(cancelOperation:)) { [self closeFind:nil]; return YES; }
-    if (action == @selector(insertNewline:) || action == @selector(insertLineBreak:) || action == @selector(insertNewlineIgnoringFieldEditor:)) {
-        if (NSApp.currentEvent.modifierFlags & NSEventModifierFlagShift) [self findPrevious:nil];
-        else [self findNext:nil];
+    if (control!=_findBar.field || editor.hasMarkedText) return NO;
+    if (action==@selector(cancelOperation:)) {
+        if (ShortcutValue(SearchCloseKey)==Shortcut(SearchCloseKey).standard) [self closeFind:nil];
+        return YES;
+    }
+    if (action==@selector(insertNewline:) || action==@selector(insertLineBreak:) || action==@selector(insertNewlineIgnoringFieldEditor:)) {
+        BOOL previous=(NSApp.currentEvent.modifierFlags & NSEventModifierFlagShift)!=0;
+        ShortcutID id=previous ? SearchPreviousKey : SearchNextKey;
+        if (ShortcutValue(id)==Shortcut(id).standard) {
+            if (previous) [self findPrevious:nil]; else [self findNext:nil];
+        }
         return YES;
     }
     return NO;
 }
+- (BOOL)handleTerminalShortcut:(NSEvent *)event {
+    if (MatchesShortcut(event,TerminalFindKey)) { [self showFind:nil]; return YES; }
+    if (_assistant.busy && _session.agentInputID && MatchesShortcut(event,StopAgentKey)) {
+        [self unmarkText]; [_assistant submitTask:@"/stop"]; return YES;
+    }
+    if (_awaitingApproval && MatchesShortcut(event,ApproveKey)) {
+        if (!event.isARepeat) [self approveAgentCommand]; return YES;
+    }
+    return NO;
+}
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+    if (event.type==NSEventTypeKeyDown &&
+        ((self.window.firstResponder==self && [self handleTerminalShortcut:event]) || [self handleFindKey:event])) return YES;
+    return [super performKeyEquivalent:event];
+}
 - (void)keyDown:(NSEvent *)event {
-    NSEventModifierFlags modifiers = event.modifierFlags & (NSEventModifierFlagControl|NSEventModifierFlagShift|NSEventModifierFlagOption|NSEventModifierFlagCommand);
-    if (modifiers == NSEventModifierFlagControl && [event.charactersIgnoringModifiers.lowercaseString isEqual:@"f"]) {
-        [self showFind:nil]; return;
-    }
-    if (event.modifierFlags & NSEventModifierFlagCommand) { [super keyDown:event]; return; }
-    if (_assistant.busy && _session.agentInputID && modifiers==NSEventModifierFlagControl &&
-        [event.charactersIgnoringModifiers.lowercaseString isEqual:@"c"]) {
-        [self unmarkText]; [_assistant submitTask:@"/stop"]; return;
-    }
-    if ([self agentOwnsEditor]) {
-        if (!event.isARepeat && !modifiers && (event.keyCode==36 || event.keyCode==76)) [self approveAgentCommand];
-        return;
-    }
+    NSEventModifierFlags modifiers=event.modifierFlags & (NSEventModifierFlagControl|NSEventModifierFlagShift|NSEventModifierFlagOption|NSEventModifierFlagCommand);
+    if ([self handleTerminalShortcut:event]) return;
+    if (modifiers & NSEventModifierFlagCommand) { [super keyDown:event]; return; }
+    if ([self agentOwnsEditor]) return;
     if (!_marked.length) {
         NSString *seq = nil;
         switch (event.keyCode) {
@@ -1812,7 +1845,7 @@ struct PaintedLine {
     return [self.window convertRectToScreen:[self convertRect:caret toView:nil]];
 }
 - (void)doCommandBySelector:(SEL)selector {
-    if (selector == @selector(insertNewline:) && [self agentOwnsEditor]) [self approveAgentCommand];
+    if (selector == @selector(insertNewline:) && [self agentOwnsEditor] && ShortcutValue(ApproveKey)==Shortcut(ApproveKey).standard) [self approveAgentCommand];
     else if (selector == @selector(insertNewline:)) [self sendString:@"\r"];
     else if (selector == @selector(deleteBackward:)) [self sendString:@"\177"];
     else if (selector == @selector(insertTab:)) [self sendString:@"\t"];

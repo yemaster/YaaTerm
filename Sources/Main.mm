@@ -1,6 +1,7 @@
 #import "AppUpdates.h"
 #import "WindowContent.h"
 #import "Preferences.h"
+#import "Shortcuts.h"
 #import "Palette.h"
 #include <clocale>
 
@@ -176,11 +177,8 @@ static void positionAtDrop(TabWorkspace *workspace, NSRect preview) {
     NSInteger index=[bar indexOfItemWithTitle:@"编辑"]+1;
     NSMenuItem *entry=[bar insertItemWithTitle:@"Agent" action:nil keyEquivalent:@"" atIndex:index];
     NSMenu *assistant=[[NSMenu alloc] initWithTitle:entry.title]; entry.submenu=assistant;
-    if (input) [assistant addItemWithTitle:@"切换 Agent 输入" action:@selector(toggleAssistant:) keyEquivalent:@"j"];
-    if (explain) {
-        NSMenuItem *item=[assistant addItemWithTitle:@"解释上一条错误" action:@selector(explainFailure:) keyEquivalent:@"E"];
-        item.keyEquivalentModifierMask=NSEventModifierFlagCommand|NSEventModifierFlagShift;
-    }
+    if (input) AddShortcutItem(assistant,AgentKey);
+    if (explain) AddShortcutItem(assistant,ExplainKey);
     if (!local) return;
     NSMenuItem *launcher = [assistant addItemWithTitle:@"在当前终端运行" action:nil keyEquivalent:@""];
     launcher.submenu = [[NSMenu alloc] initWithTitle:launcher.title];
@@ -195,42 +193,38 @@ static void positionAtDrop(TabWorkspace *workspace, NSRect preview) {
         NSMenuItem *item = [bar addItemWithTitle:title action:nil keyEquivalent:@""];
         item.submenu = [[NSMenu alloc] initWithTitle:title]; return item.submenu;
     };
-    auto item = [](NSMenu *m, NSString *name, SEL action, NSString *key, NSEventModifierFlags flags) {
-        NSMenuItem *i = [m addItemWithTitle:name action:action keyEquivalent:key]; i.keyEquivalentModifierMask = flags;
-    };
-    NSEventModifierFlags cmd = NSEventModifierFlagCommand, shift = cmd|NSEventModifierFlagShift, opt = cmd|NSEventModifierFlagOption;
     NSMenu *app = menu(@"YaaTerm");
-    item(app,@"设置…",@selector(showSettings:),@",",cmd);
+    AddShortcutItem(app,SettingsKey);
     [app addItem:NSMenuItem.separatorItem];
-    item(app,@"退出 YaaTerm",@selector(terminate:),@"q",cmd);
+    AddShortcutItem(app,QuitKey);
     NSMenu *session = menu(@"会话");
-    item(session,@"新建窗口",@selector(addWindow:),@"n",cmd);
-    item(session,@"新建标签页",@selector(addTab:),@"t",cmd);
+    AddShortcutItem(session,NewWindowKey);
+    AddShortcutItem(session,NewTabKey);
     [session addItem:NSMenuItem.separatorItem];
-    item(session,@"左右分屏",@selector(splitRight:),@"d",cmd);
-    item(session,@"上下分屏",@selector(splitDown:),@"D",shift);
-    item(session,@"关闭当前分屏或标签页",@selector(closePane:),@"w",cmd);
+    AddShortcutItem(session,SplitRightKey);
+    AddShortcutItem(session,SplitDownKey);
+    AddShortcutItem(session,ClosePaneKey);
     NSMenu *edit = menu(@"编辑");
-    item(edit,@"复制",@selector(copy:),@"c",cmd); item(edit,@"粘贴",@selector(paste:),@"v",cmd);
+    AddShortcutItem(edit,CopyKey); AddShortcutItem(edit,PasteKey);
     [edit addItem:NSMenuItem.separatorItem];
-    item(edit,@"搜索终端内容…",@selector(showFind:),@"f",cmd);
-    item(edit,@"查找下一处",@selector(findNext:),@"g",cmd);
-    item(edit,@"查找上一处",@selector(findPrevious:),@"G",shift);
+    AddShortcutItem(edit,FindKey);
+    AddShortcutItem(edit,FindNextKey);
+    AddShortcutItem(edit,FindPreviousKey);
     for (NSString *key in @[AIErrorExplanations,BuiltInAgent,LocalAgentLauncher])
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refreshAgentMenu:) name:TerminalPreferenceChanged object:key];
     [self refreshAgentMenu:nil];
     NSMenu *view = menu(@"显示");
-    item(view,@"放大字号",@selector(larger:),@"=",cmd); item(view,@"缩小字号",@selector(smaller:),@"-",cmd);
-    item(view,@"恢复默认字号",@selector(normalSize:),@"0",cmd);
+    AddShortcutItem(view,LargerKey); AddShortcutItem(view,SmallerKey);
+    AddShortcutItem(view,NormalSizeKey);
     NSMenu *window = menu(@"窗口"); NSApp.windowsMenu = window;
-    item(window,@"上一个标签页",@selector(previousSessionTab:),@"{",shift);
-    item(window,@"下一个标签页",@selector(nextSessionTab:),@"}",shift);
+    AddShortcutItem(window,PreviousTabKey);
+    AddShortcutItem(window,NextTabKey);
     [window addItem:NSMenuItem.separatorItem];
-    item(window,@"上一个分屏",@selector(previousPane:),@"[",opt);
-    item(window,@"下一个分屏",@selector(nextPane:),@"]",opt);
+    AddShortcutItem(window,PreviousPaneKey);
+    AddShortcutItem(window,NextPaneKey);
     [window addItem:NSMenuItem.separatorItem];
-    item(window,@"最小化",@selector(performMiniaturize:),@"m",cmd);
-    item(window,@"切换全屏",@selector(toggleFullScreen:),@"f",cmd|NSEventModifierFlagControl);
+    AddShortcutItem(window,MinimizeKey);
+    AddShortcutItem(window,FullScreenKey);
 }
 @end
 

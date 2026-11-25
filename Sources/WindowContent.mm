@@ -37,6 +37,8 @@ static NSView *backgroundMaterialView(TerminalBackgroundMaterial material, NSRec
 - (void)sendEvent:(NSEvent *)event {
     if (event.type==NSEventTypeFlagsChanged && self.isKeyWindow)
         [_workspace setLinkModifierDown:(event.modifierFlags & NSEventModifierFlagCommand)!=0];
+    if (event.type==NSEventTypeKeyDown && [self.firstResponder isKindOfClass:NSTextView.class] &&
+        [_workspace.focused handleFindKey:event]) return;
     [super sendEvent:event];
 }
 - (void)becomeKeyWindow {

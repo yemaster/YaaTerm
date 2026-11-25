@@ -1,6 +1,7 @@
 #import "FindBar.h"
 #import "Palette.h"
 #import "Preferences.h"
+#import "Shortcuts.h"
 
 static constexpr CGFloat rowHeight = 34, compactWidth = 280, buttonWidth = 24;
 
@@ -36,18 +37,22 @@ static constexpr CGFloat rowHeight = 34, compactWidth = 280, buttonWidth = 24;
             [self addSubview:b]; return b;
         };
         _clear = button(@"xmark.circle.fill",@"清除搜索文字",self,@selector(clearQuery:));
-        _previous = button(@"chevron.up",@"上一处（⇧Return）",target,@selector(findPrevious:));
-        _next = button(@"chevron.down",@"下一处（Return）",target,@selector(findNext:));
-        _close = button(@"xmark",@"关闭搜索（Esc）",target,@selector(closeFind:));
+        _previous = button(@"chevron.up",@"上一处",target,@selector(findPrevious:));
+        _next = button(@"chevron.down",@"下一处",target,@selector(findNext:));
+        _close = button(@"xmark",@"关闭搜索",target,@selector(closeFind:));
         _clear.hidden = YES;
         _previous.enabled = _next.enabled = NO;
         _status = [NSTextField labelWithString:@""];
         _status.font = [NSFont systemFontOfSize:11];
         _status.hidden = YES;
         [self addSubview:_status];
-        [self applyPalette];
+        [self refreshShortcuts]; [self applyPalette];
     }
     return self;
+}
+- (void)refreshShortcuts {
+    _previous.toolTip=ShortcutTip(@"上一处",SearchPreviousKey);
+    _next.toolTip=ShortcutTip(@"下一处",SearchNextKey); _close.toolTip=ShortcutTip(@"关闭搜索",SearchCloseKey);
 }
 - (BOOL)isFlipped { return YES; }
 - (void)applyPalette {

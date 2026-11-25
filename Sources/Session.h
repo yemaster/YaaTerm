@@ -11,6 +11,7 @@
 - (NSString *)takeAgentTask:(NSString *)identifier;
 - (void)endAgentInput:(BOOL)wakeEditor;
 - (void)postAgentText:(NSString *)text finished:(BOOL)finished wakeEditor:(BOOL)wake;
+- (void)setReviewKeys:(NSString *)keys wake:(BOOL)wake;
 - (void)previewAgentText:(NSString *)text;
 - (BOOL)approveAgentLine:(NSString *)identifier;
 - (NSString *)submitLine:(NSString *)line execute:(BOOL)execute acknowledged:(void (^)(BOOL))reply;

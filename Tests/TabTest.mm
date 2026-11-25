@@ -3,6 +3,7 @@
 #include <string_view>
 #include "TerminalRow.hpp"
 #import "SettingsView.h"
+#import "Shortcuts.h"
 #import "TaskNotices.h"
 #import "Preferences.h"
 #import "Palette.h"
@@ -32,6 +33,13 @@
 @end
 @implementation TestKeyView
 - (void)sendString:(NSString *)value { self.sent = value; }
+@end
+
+@interface ShortcutTarget : NSObject
+@property NSInteger tabs;
+@end
+@implementation ShortcutTarget
+- (void)addTab:(id)sender { ++_tabs; }
 @end
 
 static void checkTerminalKeys() {
@@ -143,6 +151,72 @@ static void applyControl(NSControl *control) {
     assert(target && [target respondsToSelector:action]);
     auto invoke = (void (*)(id,SEL,id))[target methodForSelector:action];
     invoke(target,action,control);
+}
+static void checkShortcuts() {
+    [NSApplication sharedApplication];
+    NSRect bounds=NSMakeRect(0,0,920,526);
+    NSWindow *window=[[NSWindow alloc] initWithContentRect:bounds styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:YES];
+    SettingsView *view=[[SettingsView alloc] initWithFrame:bounds];
+    window.contentView=view; [view selectSection:ShortcutsSection];
+    NSView *page=[view valueForKey:@"page"];
+    auto field=[&](ShortcutID id){ return (ShortcutRecorder *)controlForKey(page,Shortcut(id).identifier); };
+    NSMenu *original=NSApp.mainMenu, *bar=[NSMenu new], *menu=[[NSMenu alloc] initWithTitle:@"会话"];
+    [bar addItemWithTitle:@"会话" action:nil keyEquivalent:@""].submenu=menu;
+    NSApp.mainMenu=bar;
+    AddShortcutItem(menu,NewTabKey);
+    const auto cmd=NSEventModifierFlagCommand, ctrl=NSEventModifierFlagControl, opt=NSEventModifierFlagOption;
+    auto event=[&](unsigned short key,NSString *text,NSEventModifierFlags mods) {
+        return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:mods timestamp:0
+            windowNumber:window.windowNumber context:nil characters:text charactersIgnoringModifiers:text isARepeat:NO keyCode:key];
+    };
+    auto record=[&](ShortcutID id,NSEvent *e) {
+        auto button=field(id); assert(button);
+        applyControl(button); assert(window.firstResponder==button);
+        assert([button performKeyEquivalent:e]);
+    };
+    RestoreShortcuts();
+    NSMenuItem *item=menu.itemArray.firstObject;
+    ShortcutTarget *target=[ShortcutTarget new]; item.target=target;
+    assert([item.keyEquivalent isEqual:@"t"] && item.keyEquivalentModifierMask==cmd);
+    record(NewTabKey,event(13,@"w",cmd));
+    assert([field(NewTabKey).title containsString:@"关闭"] && [item.keyEquivalent isEqual:@"t"]);
+    [field(NewTabKey) keyDown:event(53,@"",0)];
+    record(NewTabKey,event(16,@"y",cmd|opt));
+    assert([item.keyEquivalent isEqual:@"y"] && item.keyEquivalentModifierMask==(cmd|opt));
+    assert(![menu performKeyEquivalent:event(17,@"t",cmd)] && !target.tabs);
+    assert([menu performKeyEquivalent:event(16,@"y",cmd|opt)] && target.tabs==1);
+    assert([field(NewTabKey).title isEqual:@"⌥⌘Y"] && [TerminalPreferences() dictionaryForKey:ShortcutPreferences].count==1);
+    record(TerminalFindKey,event(40,@"k",ctrl));
+    assert(MatchesShortcut(event(40,@"k",ctrl),TerminalFindKey) && !MatchesShortcut(event(3,@"f",ctrl),TerminalFindKey));
+    assert(!MatchesShortcut(event(40,@"k",0),TerminalFindKey));
+    record(SearchCloseKey,event(35,@"p",ctrl));
+    NSWindow *terminal=[[NSWindow alloc] initWithContentRect:bounds styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:YES];
+    TerminalView *pane=[[TerminalView alloc] initWithFrame:bounds]; terminal.contentView=pane;
+    [terminal makeFirstResponder:pane];
+    [pane keyDown:event(3,@"f",ctrl)]; assert(![pane valueForKey:@"findBar"]);
+    [pane keyDown:event(40,@"k",ctrl)]; assert([pane valueForKey:@"findBar"]);
+    assert(![pane handleFindKey:event(53,@"",0)] && [pane handleFindKey:event(35,@"p",ctrl)]);
+    assert(![pane valueForKey:@"findBar"]);
+    record(CopyKey,event(51,@"",0)); assert(!ShortcutValue(CopyKey));
+    NSSearchField *search=[view valueForKey:@"search"]; search.stringValue=@"⌥⌘Y"; applyControl(search);
+    applyControl(controlForKey(page,Shortcut(NewTabKey).identifier)); assert(window.firstResponder==field(NewTabKey));
+    applyControl(controlForKey(page,@"ResetShortcuts")); assert(![TerminalPreferences() objectForKey:ShortcutPreferences]);
+    assert([item.keyEquivalent isEqual:@"t"] && MatchesShortcut(event(3,@"f",ctrl),TerminalFindKey));
+    [view selectSection:GeneralSection]; [view selectSection:ShortcutsSection];
+    NSString *folder=NSProcessInfo.processInfo.environment[@"YAATERM_TEST_PREVIEW"];
+    for (int width : {920,460,325}) {
+        [window setContentSize:NSMakeSize(width,526)]; [view layoutSubtreeIfNeeded];
+        NSView *button=field(NewTabKey);
+        assert(NSContainsRect(page.bounds,button.frame));
+        if (folder) {
+            NSBitmapImageRep *rep=[view bitmapImageRepForCachingDisplayInRect:view.bounds];
+            [view cacheDisplayInRect:view.bounds toBitmapImageRep:rep];
+            NSString *name=[NSString stringWithFormat:@"shortcuts-%d.png",width];
+            assert([[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:[folder stringByAppendingPathComponent:name] atomically:YES]);
+        }
+    }
+    NSApp.mainMenu=original;
+    puts("Shortcut recorder, menu rebinding, conflicts, terminal alias, search, persistence, clearing, reset and three viewport widths OK");
 }
 static void checkSettings() {
     // This standalone test binary uses its own defaults domain.
@@ -963,7 +1037,7 @@ int main() {
     setenv("SHELL","/bin/sh",1); setenv("ENV","/dev/null",1);
     @autoreleasepool {
         checkTerminalKeys(); checkSelectionMotion();
-        checkWindowEdge(); checkSessionExit(); checkSettings(); checkVimWheel(); checkTabGroups(); checkSleepingTabs(); checkFind(); checkBackdrop(); checkNoticeEvents(); checkTransfers();
+        checkWindowEdge(); checkSessionExit(); checkSettings(); checkShortcuts(); checkVimWheel(); checkTabGroups(); checkSleepingTabs(); checkFind(); checkBackdrop(); checkNoticeEvents(); checkTransfers();
         TabWorkspace *w = [[TabWorkspace alloc] initWithFrame:NSMakeRect(0,0,800,500)];
         __block BOOL closed = NO; w.onEmpty = ^{ closed = YES; };
         [w addTab]; TerminalView *a = w.focused;

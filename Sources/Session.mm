@@ -219,6 +219,13 @@ static NSString *transcriptText(NSString *text) {
     static NSRegularExpression *controls=[NSRegularExpression regularExpressionWithPattern:@"[\\p{Cc}&&[^\\n\\t]]|\\p{Bidi_Control}" options:0 error:nil];
     return [controls stringByReplacingMatchesInString:text options:0 range:NSMakeRange(0,text.length) withTemplate:@"�"];
 }
+- (void)setReviewKeys:(NSString *)keys wake:(BOOL)wake {
+    if (!_agentInputID) return;
+    NSString *path=[_controlDirectory stringByAppendingPathComponent:@"review-keys"];
+    if ([keys isEqual:@"Enter / Ctrl+C"]) unlink(path.fileSystemRepresentation);
+    else [keys writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    if (wake && [self shellIsForeground]) [self wakeEditor];
+}
 - (void)previewAgentText:(NSString *)text {
     if (!_agentInputID || ![self shellIsForeground]) return;
     NSString *path=[_controlDirectory stringByAppendingPathComponent:@"preview"];
@@ -238,7 +245,7 @@ static NSString *transcriptText(NSString *text) {
     if (!_agentInputID) return;
     unlink([_controlDirectory stringByAppendingPathComponent:@"mode"].fileSystemRepresentation);
     for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:_controlDirectory error:nil])
-        if ([name hasPrefix:@"task-"] || [name hasPrefix:@"note-"] || [name hasPrefix:@"done-"] || [name isEqual:@"approve"] || [name isEqual:@"prompt-color"] || [name isEqual:@"preview"])
+        if ([name hasPrefix:@"task-"] || [name hasPrefix:@"note-"] || [name hasPrefix:@"done-"] || [name isEqual:@"approve"] || [name isEqual:@"prompt-color"] || [name isEqual:@"review-keys"] || [name isEqual:@"preview"])
             unlink([_controlDirectory stringByAppendingPathComponent:name].fileSystemRepresentation);
     _agentInputID=nil; _earlyInput=nil; _agentReady=nil;
     if (wake && [self shellIsForeground]) [self wakeEditor];

@@ -13,6 +13,7 @@
 - (BOOL)canSleep;
 - (void)sleepWithWakeHandler:(dispatch_block_t)handler;
 - (void)wakeFromIdle;
+- (BOOL)handleFindKey:(NSEvent *)event;
 - (void)start;
 - (void)showLocalAgent:(NSString *)tool;
 - (NSString *)workingDirectory;

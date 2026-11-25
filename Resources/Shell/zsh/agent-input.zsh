@@ -140,3 +140,9 @@ _yaaterm_compose() {
     precmd_functions=(${${precmd_functions:#_yaaterm_restore_prompt}:#_yaaterm_agent_prompt})
     zle -R
 }
+
+_yaaterm_review_hint() {
+    local keys='Enter / Ctrl+C'
+    [[ ! -r $_yaaterm_ai_dir/review-keys ]] || keys=$(<"$_yaaterm_ai_dir/review-keys")
+    POSTDISPLAY="  [$keys]"
+}

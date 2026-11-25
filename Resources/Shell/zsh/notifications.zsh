@@ -197,6 +197,7 @@ _yaaterm_input_widget() {
             _yaaterm_reset_agent_prompt
         fi
         _yaaterm_draw_notes
+        [[ -z ${_yaaterm_review_id-} ]] || _yaaterm_review_hint
         if [[ -n ${_yaaterm_task_active-} && -z ${_yaaterm_review_id-} && -r $_yaaterm_ai_dir/preview ]]; then
             PREDISPLAY=$(<"$_yaaterm_ai_dir/preview")
             zle -R
@@ -252,7 +253,8 @@ _yaaterm_input_widget() {
     builtin printf '\033]777;yaaterm-input;%s;%s;%d\007' "$_yaaterm_exit_token" "$id" "$ok" > "$TTY"
     if (( ok && review )); then
         _yaaterm_review_id=$id _yaaterm_review_line=$line
-        PROMPT=$_yaaterm_shell_prompt RPROMPT=$_yaaterm_shell_right PREDISPLAY='' POSTDISPLAY='  [Enter / Ctrl+C]'
+        PROMPT=$_yaaterm_shell_prompt RPROMPT=$_yaaterm_shell_right PREDISPLAY=''
+        _yaaterm_review_hint
         zle reset-prompt
         zle -R
         builtin printf '\033]777;yaaterm-editor;%s;%s;review\007' "$_yaaterm_exit_token" "$id" > "$TTY"

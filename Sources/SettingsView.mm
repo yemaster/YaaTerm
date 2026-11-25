@@ -1,6 +1,7 @@
 #import "SettingsView.h"
 #import "AppUpdates.h"
 #import "Preferences.h"
+#import "Shortcuts.h"
 #import "Palette.h"
 #import "Wallpaper.h"
 #import "LLMSettingsForm.h"
@@ -49,7 +50,7 @@ static void drawSymbol(NSImage *image, NSRect box) {
 }
 @end
 
-NSString *SettingsSectionTitle(NSInteger section) { return @[@"通用",@"外观",@"终端",@"性能",@"AI 服务",@"关于"][section]; }
+NSString *SettingsSectionTitle(NSInteger section) { return @[@"通用",@"外观",@"终端",@"性能",@"AI 服务",@"快捷键",@"关于"][section]; }
 
 // The form and the search results share the same names and destinations.
 enum SettingID : NSInteger {
@@ -437,10 +438,12 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
         }
 
         BOOL gallery = [field isKindOfClass:ThemeGallery.class];
+        BOOL shortcut = [field isKindOfClass:ShortcutRecorder.class];
         BOOL fullRow = gallery || label.hidden;
         NSSize size = field.frame.size;
         BOOL editor = [field isKindOfClass:NSTextField.class] || [field isKindOfClass:WallpaperPicker.class];
-        BOOL stacked = !label.hidden && (gallery || _rowWidth < 345);
+        BOOL stacked = !label.hidden && (gallery || _rowWidth < (shortcut ? 275 : 345));
+        if (shortcut) size.width=stacked ? 144 : MIN(144.,floor(_rowWidth*.40));
         if (fullRow || (editor && stacked)) size.width = _rowWidth;
         else if (editor) size.width = MIN(320.,floor(_rowWidth*.48));
         size.width = MIN(size.width,_rowWidth);
@@ -450,6 +453,7 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
         CGFloat hintHeight = hint ? ceil([hint.cell cellSizeForBounds:NSMakeRect(0,0,textWidth,CGFLOAT_MAX)].height) : 0;
         CGFloat textHeight = label.hidden ? 0 : 20+(hint ? 3+hintHeight : 0);
         CGFloat rowHeight = stacked ? textHeight+8+size.height+26 : MAX(50.,MAX(textHeight,size.height)+24);
+        if (shortcut && !stacked) rowHeight=MAX(39.,size.height+12);
         CGFloat labelY = stacked ? y+13 : y+floor((rowHeight-textHeight)/2);
         label.frame = NSMakeRect(_rowX,labelY,textWidth,20);
         hint.frame = NSMakeRect(_rowX,labelY+23,textWidth,hintHeight);
@@ -494,6 +498,7 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     NSTextField *_sidebarTitle;
     NSSearchField *_search;
     BOOL _showingResults;
+    NSPoint _shortcutsScroll;
     NSSegmentedControl *_mode, *_material;
     NSPopUpButton *_promptColors, *_directoryColors;
     FontFamilyPicker *_fontFamily;
@@ -535,6 +540,20 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
 }
 - (BOOL)isFlipped { return YES; }
 - (BOOL)isOpaque { return YES; }
+- (void)viewWillMoveToWindow:(NSWindow *)window {
+    if (!window && self.window && _selection==ShortcutsSection && !_showingResults) {
+        _shortcutsScroll=_page.visibleRect.origin;
+        [self clearPage];
+    }
+    [super viewWillMoveToWindow:window];
+}
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    if (self.window && _selection==ShortcutsSection && !_showingResults && !_fields.count) {
+        [self displaySection:ShortcutsSection];
+        [_page scrollPoint:_shortcutsScroll];
+    }
+}
 - (NSView *)navigationButton { return _showingResults ? (NSView *)_search : _sections[_selection]; }
 - (CGFloat)sidebarWidth { return NSWidth(self.bounds)<680 ? 122 : MIN(238.,MAX(172.,round(NSWidth(self.bounds)*.215))); }
 - (void)drawRect:(NSRect)dirty {
@@ -734,6 +753,14 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
         [self addField:_apiForm.apiKey setting:APIKey];
         [self addField:_apiForm.model setting:APIModel];
         [self addField:_apiForm setting:APIActions];
+    } else if (section == ShortcutsSection) {
+        for (NSInteger i=0;i<ShortcutCount;++i) {
+            auto index=(ShortcutID)i; const auto &key=Shortcut(index);
+            [self addField:[[ShortcutRecorder alloc] initWithShortcut:index] label:key.title key:key.identifier group:key.group hint:nil];
+        }
+        NSButton *restore=[NSButton buttonWithTitle:@"全部恢复" target:self action:@selector(resetShortcuts:)];
+        [restore sizeToFit];
+        [self addField:restore label:@"恢复默认快捷键" key:@"ResetShortcuts" group:@"默认设置" hint:nil];
     } else if (section == AboutSection) {
         NSBundle *bundle = NSBundle.mainBundle;
         NSString *version = [bundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
@@ -752,6 +779,7 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     }
     [self finishPage];
 }
+- (void)resetShortcuts:(id)sender { RestoreShortcuts(); }
 - (void)searchChanged:(NSSearchField *)sender {
     NSString *query = [sender.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     if (!query.length) { if (_showingResults) [self displaySection:_selection]; return; }
@@ -774,6 +802,16 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
         result.target = self; result.action = @selector(openResult:);
         [self addField:result label:@"" key:info.key group:section hint:nil];
     }
+    NSString *section=SettingsSectionTitle(ShortcutsSection);
+    for (NSInteger i=0;i<ShortcutCount;++i) {
+        auto index=(ShortcutID)i; const auto &key=Shortcut(index);
+        if (![section containsString:query] && ![key.title localizedCaseInsensitiveContainsString:query] &&
+            ![key.group localizedCaseInsensitiveContainsString:query] && ![ShortcutLabel(index) localizedCaseInsensitiveContainsString:query]) continue;
+        SettingResult *result=[[SettingResult alloc] initWithFrame:NSMakeRect(0,0,180,26)];
+        result.bordered=NO; result.title=key.title; result.tag=SettingCount+i;
+        result.target=self; result.action=@selector(openResult:); [result setAccessibilityLabel:key.title];
+        [self addField:result label:@"" key:key.identifier group:section hint:nil];
+    }
     if (!_fields.count) {
         _page.emptyMessage = [NSTextField labelWithString:@"没有找到匹配的设置"];
         [_page addSubview:_page.emptyMessage];
@@ -781,11 +819,12 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     [self finishPage];
 }
 - (void)openResult:(NSButton *)sender {
-    const auto &info = setting((SettingID)sender.tag);
-    [self selectSection:info.section];
+    BOOL shortcut=sender.tag>=SettingCount;
+    NSString *target=shortcut ? Shortcut((ShortcutID)(sender.tag-SettingCount)).identifier : setting((SettingID)sender.tag).key;
+    [self selectSection:shortcut ? ShortcutsSection : setting((SettingID)sender.tag).section];
     for (NSUInteger i=0; i<_fields.count; ++i) {
         NSView *field = _fields[i];
-        if (![field.identifier isEqual:info.key]) continue;
+        if (![field.identifier isEqual:target]) continue;
         [_page scrollPoint:NSMakePoint(0,MAX(0.,NSMinY(_labels[i].frame)-18))];
         if (field.acceptsFirstResponder) [self.window makeFirstResponder:field];
         break;
@@ -831,7 +870,7 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     for (NSTextField *group in _groupHeadings.objectEnumerator) group.textColor = colors.secondaryText;
     for (NSTextField *label in _labels) label.textColor = colors.text;
     for (SectionButton *button : _sections) {
-        button.image = symbol(@[@"slider.horizontal.3",@"sun.max",@"terminal",@"gauge.with.dots.needle.50percent",@"network",@"info.circle"][button.tag],button.chosen ? colors.accent : colors.secondaryText);
+        button.image = symbol(@[@"slider.horizontal.3",@"sun.max",@"terminal",@"gauge.with.dots.needle.50percent",@"network",@"keyboard",@"info.circle"][button.tag],button.chosen ? colors.accent : colors.secondaryText);
         button.needsDisplay = YES;
     }
     if (_mode) {
@@ -849,6 +888,12 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
 }
 - (void)preferenceChanged:(NSNotification *)note {
     NSString *key = note.object;
+    if ([key isEqual:ShortcutPreferences]) {
+        if (_showingResults) [self searchChanged:_search];
+        else if (_selection==ShortcutsSection)
+            for (NSView *field in _fields) if ([field isKindOfClass:ShortcutRecorder.class]) [(ShortcutRecorder *)field refresh];
+        return;
+    }
     if ([key isEqual:AIErrorExplanations] || [key isEqual:BuiltInAgent] || [key isEqual:LocalAgentLauncher]) {
         BOOL show = [TerminalPreferences() boolForKey:AIErrorExplanations] || [TerminalPreferences() boolForKey:BuiltInAgent];
         BOOL showColor=[TerminalPreferences() boolForKey:BuiltInAgent] || [TerminalPreferences() boolForKey:LocalAgentLauncher];

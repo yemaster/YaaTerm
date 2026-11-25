@@ -4,6 +4,7 @@
 #import "TerminalOutput.h"
 #import "Preferences.h"
 #import "Session.h"
+#import "Shortcuts.h"
 #include <cassert>
 #include <sys/ioctl.h>
 #import <CoreText/CoreText.h>
@@ -15,6 +16,10 @@
 - (const yaa::Row &)displayRow:(int)y;
 - (CGFloat)topOfRow:(int)y;
 - (int)rowAtY:(CGFloat)y;
+@end
+
+@interface ShortcutRecorder (OutputTest)
+- (void)recordEvent:(NSEvent *)event;
 @end
 
 @interface HoverTestWindow : NSWindow
@@ -543,7 +548,16 @@ static void testTerminalOutput(NSString *directory) {
     [pane insertText:@"\r" replacementRange:NSMakeRange(NSNotFound,0)];
     send(@"\r"); // Typeahead in the PTY is not approval for a staged command.
     [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.04]];
-    assert(pending(@"pwd")); key(NO);
+    assert(pending(@"pwd"));
+    unichar f6=NSF6FunctionKey; NSString *f6Key=[NSString stringWithCharacters:&f6 length:1];
+    NSEvent *approve=[NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0
+        windowNumber:window.windowNumber context:nil characters:f6Key charactersIgnoringModifiers:f6Key isARepeat:NO keyCode:97];
+    [[[ShortcutRecorder alloc] initWithShortcut:ApproveKey] recordEvent:approve];
+    until(^BOOL{ return shown("F6 / Ctrl+C"); });
+    key(NO); assert([[pane valueForKey:@"awaitingApproval"] boolValue]);
+    [pane keyDown:approve];
+    until(^BOOL{ return [[pane valueForKey:@"awaitingApproval"] boolValue] && [[pane valueForKeyPath:@"assistant.expectedCommand"] isEqual:@"ls"]; });
+    RestoreShortcuts();
     until(^BOOL{ return pending(@"ls"); });
     assert(!idlePromptCount() && stampOf("LEFT> ls")>0);
     int frameStart=0;
