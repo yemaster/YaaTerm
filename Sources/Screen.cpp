@@ -119,6 +119,8 @@ void Screen::resize(int w, int h) {
     if (frozen()) thaw();
     resizeBuffer(active(), w, h);
     cols = w; height = h;
+    if (codePreview.active()) codePreview.resumeRow(active().rows[y()].codeLine);
+    updateWriteColumns();
 }
 
 void Screen::resizeBuffer(Buffer &b, int w, int h) {
@@ -137,7 +139,7 @@ void Screen::resizeBuffer(Buffer &b, int w, int h) {
     b.rows.erase(b.rows.begin(), b.rows.begin()+shift);
     b.rows.resize(h);
     for (auto &r : b.rows) {
-        r.resize(w); r.written = std::min(r.written,w);
+        r.resize(w); r.written = std::min<int>(r.written,w);
         if (w != oldWidth) r.wrapAt = 0;
         if (r.back().width == 2) r.back() = Cell{};
     }
@@ -176,6 +178,7 @@ void Screen::reflowMain(int w, int h) {
         const Row &src = b.rows[y];
         out.agentStamp = src.agentStamp;
         if (!filled) out.codeLine = src.codeLine;
+        int widthLimit = w-codeGutterColumns(src.codeLine,w);
         int end = src.wrapAt ? src.wrapAt : src.used();
         auto insertion = [&](const Cursor &c) { return c.x + (c.wrapPending ? 1 : 0); };
         if (b.cursor.y == y) end = std::max(end,insertion(b.cursor));
@@ -184,7 +187,7 @@ void Screen::reflowMain(int w, int h) {
         auto place = [&](int col) {
             auto map = [&](const Cursor &c,Cursor &dest) {
                 if (c.y == y && insertion(c) == col) {
-                    dest.y = emitted; dest.x = std::min(w-1,filled); dest.wrapPending = filled == w;
+                    dest.y = emitted; dest.x = std::min(widthLimit-1,filled); dest.wrapPending = filled == widthLimit;
                 }
             };
             map(b.cursor,next); map(b.saved,saved);
@@ -192,9 +195,9 @@ void Screen::reflowMain(int w, int h) {
         };
         for (int x=0; x<end;) {
             int width = src[x].width == 2 && x+1<end ? 2 : 1;
-            if (filled+width > w) {
+            if (filled+width > widthLimit) {
                 emit(true); out.agentStamp = src.agentStamp;
-                if (src.codeLine) out.codeLine = ContinuedCodeLine;
+                if (src.codeLine) out.codeLine = CodeContinuation | src.codeLine;
             }
             place(x); out[filled++] = src[x++];
             if (width == 2) { place(x); out[filled++] = src[x++]; }
@@ -263,6 +266,7 @@ void Screen::lineFeed(int wrapAt) {
     if (codePreview.active()) {
         Row &row = b.rows[b.cursor.y];
         codePreview.finishRow(row,wrapAt ? wrapAt : row.written,wrapAt != 0);
+        updateWriteColumns();
     }
     b.rows[b.cursor.y].wrapAt = wrapAt;
     if (agentStamp && !alternate) b.rows[b.cursor.y].agentStamp = agentStamp;
@@ -276,7 +280,7 @@ void Screen::erase(Row &r, int first, int end) {
     if (first == 0 && end == cols) { r.agentStamp = 0; r.codeLine = 0; }
     if (first > 0 && r[first].width == 0) --first;
     if (end < cols && r[end].width == 0) ++end;
-    if (end >= r.written) r.written = std::min(r.written,first);
+    if (end >= r.written) r.written = std::min<int>(r.written,first);
     std::fill(r.begin() + first, r.begin() + end, blank());
 }
 bool Screen::extendEmoji(char32_t ch) {
@@ -298,19 +302,20 @@ bool Screen::extendEmoji(char32_t ch) {
         std::move_backward(row.begin()+x+1,row.end()-1,row.end());
         if (row.written>x+1) row.written = std::min(cols,row.written+1);
     }
-    if (x+1 == cols) {
+    if (x+1 == writeColumns) {
         if (!cursor.autoWrap) return true;
-        erase(row,x,cols);
+        erase(row,x,writeColumns);
         lineFeed(x); x = 0;
     }
     Row &dest = b.rows[cursor.y];
     erase(dest,x,x+2);
     dest[x] = glyph; dest[x].width = 2;
     dest[x+1] = Cell{glyph.style,0,0,0,(uint32_t)glyph.tag};
-    dest.written = std::max(dest.written,x+2);
+    dest.written = std::max<int>(dest.written,x+2);
+    dest.codeLine = writingCodeLine;
     dest.agentStamp = alternate ? 0 : agentStamp;
-    cursor.wrapPending = x+2 == cols;
-    cursor.x = std::min(cols-1,x+2);
+    cursor.wrapPending = x+2 == writeColumns;
+    cursor.x = std::min(writeColumns-1,x+2);
     damage(cursor.y,cursor.y);
     return true;
 }
@@ -334,25 +339,25 @@ void Screen::put(char32_t ch) {
 }
 void Screen::writeGlyph(char32_t ch, int width, uint32_t mark) {
     auto &b = active();
-    if (b.cursor.autoWrap && (b.cursor.wrapPending || b.cursor.x + width > cols)) {
-        lineFeed(b.cursor.wrapPending ? cols : b.cursor.x); b.cursor.x = 0;
+    if (b.cursor.autoWrap && (b.cursor.wrapPending || b.cursor.x + width > writeColumns)) {
+        lineFeed(b.cursor.wrapPending ? b.cursor.x+1 : b.cursor.x); b.cursor.x = 0;
     }
-    if (width + b.cursor.x > cols) width = 1;
+    if (width + b.cursor.x > writeColumns) width = 1;
     damage(b.cursor.y, b.cursor.y);
     auto &r = b.rows[b.cursor.y];
-    if (!b.cursor.x) r.codeLine = 0;
+    if (writingCodeLine || !b.cursor.x || b.cursor.x < r.written) r.codeLine = writingCodeLine;
     if (insert) {
         std::move_backward(r.begin() + b.cursor.x, r.end() - width, r.end());
         if (r.written > b.cursor.x) r.written = std::min(cols,r.written+width);
     }
     if (r[b.cursor.x].width != 1 || (b.cursor.x + width < cols && r[b.cursor.x + width].width == 0))
         erase(r, b.cursor.x, b.cursor.x + width);
-    r.written = std::max(r.written,b.cursor.x+width);
+    r.written = std::max<int>(r.written,b.cursor.x+width);
     r.agentStamp = alternate ? 0 : agentStamp;
     r[b.cursor.x] = Cell{b.cursor.pen, ch, mark, (uint8_t)width, writeTag};
     if (width == 2) r[b.cursor.x + 1] = Cell{b.cursor.pen, 0, 0, 0, writeTag};
-    b.cursor.wrapPending = b.cursor.x + width >= cols;
-    b.cursor.x = std::min(cols - 1, b.cursor.x + width);
+    b.cursor.wrapPending = b.cursor.x + width >= writeColumns;
+    b.cursor.x = std::min(writeColumns - 1, b.cursor.x + width);
 }
 
 // Wheel presses have no release event. Coordinates from the view are one-based.
@@ -426,7 +431,8 @@ void Screen::mode(int n, bool on, bool priv) {
 
 void Screen::moveTabs(int count, bool forward) {
     auto &cursor = active().cursor;
-    int step = forward ? 1 : -1, edge = forward ? cols-1 : 0;
+    int step = forward ? 1 : -1, edge = forward ? writeColumns-1 : 0;
+    cursor.x = std::min(cursor.x,writeColumns-1);
     while (count-- && cursor.x != edge) {
         do { cursor.x += step; } while (cursor.x != edge && !tabs[cursor.x]);
     }
@@ -656,6 +662,7 @@ void Screen::finishCode() {
     auto &row = main.rows[main.cursor.y];
     if (row.written) codePreview.finishRow(row,row.written,false);
     codePreview = {};
+    updateWriteColumns();
 }
 
 void Screen::finishOSC() {
@@ -668,6 +675,7 @@ void Screen::finishOSC() {
         return value;
     };
     auto code = take(';');
+    if (code == "133" && data == "D") { finishCode(); return; }
     if (truncated && !(code=="9" && agentCommand=="codex")) return;
     if (code == "0" || code == "2") {
         if (title) title(data);
@@ -746,6 +754,7 @@ void Screen::finishOSC() {
             auto kind = take(';');
             finishCode();
             if (showCode && !alternate) codePreview.begin(kind);
+            updateWriteColumns();
             if (!alternate && outputContext) {
                 context = outputContext(kind,data);
                 active().link = 0; writeTag = context;
@@ -802,7 +811,7 @@ void Screen::byte(uint8_t c) {
     }
     if (c == 27) { graphicAdjacent = false; state = Escape; return; }
     if (c < 32) {
-        if (!c && codePreview.active()) codePreview = {};
+        if (!c && codePreview.active()) { codePreview = {}; updateWriteColumns(); }
         graphicAdjacent = false;
         if (c == 13) { b.cursor.x = 0; b.cursor.wrapPending = false; }
         else if (c == 10 || c == 11 || c == 12) lineFeed();
@@ -836,7 +845,12 @@ void Screen::byte(uint8_t c) {
         return;
     }
     if (state == CSI) {
-        if (c >= 0x40 && c <= 0x7e) { if (!truncated) control(c); state = Text; }
+        if (c >= 0x40 && c <= 0x7e) {
+            // Cursor-addressed output must use the width reported to the application.
+            if (c != 'm' && codePreview.active()) finishCode();
+            if (!truncated) control(c);
+            state = Text;
+        }
         else if (sequence.size() < 192) sequence += c; else truncated = true;
         return;
     }
@@ -864,8 +878,9 @@ void Screen::feed(std::string_view bytes) {
             auto &cursor = buffer.cursor;
             auto &line = buffer.rows[cursor.y];
             // Fresh ASCII runs need no glyph lookup or wide-cell boundary repair.
-            if (!cursor.wrapPending && cursor.x>=line.written && cursor.charsets[cursor.shift]=='B') {
-                size_t end = pos+std::min(bytes.size()-pos,(size_t)(cols-cursor.x));
+            if (!cursor.wrapPending && cursor.x>=line.written && cursor.x<writeColumns && cursor.charsets[cursor.shift]=='B') {
+                if (writingCodeLine || !cursor.x) line.codeLine = writingCodeLine;
+                size_t end = pos+std::min(bytes.size()-pos,(size_t)(writeColumns-cursor.x));
                 do {
                     line[cursor.x++] = Cell{cursor.pen,c,0,1,writeTag};
                     ++pos;
@@ -873,9 +888,8 @@ void Screen::feed(std::string_view bytes) {
                     c = bytes[pos];
                 } while (c>=32 && c<127);
                 line.written = cursor.x;
-                line.codeLine = 0;
                 line.agentStamp = alternate ? 0 : agentStamp;
-                if (cursor.x==cols) { cursor.wrapPending = true; --cursor.x; }
+                if (cursor.x==writeColumns) { cursor.wrapPending = true; --cursor.x; }
                 graphicAdjacent = true;
                 damage(cursor.y,cursor.y);
                 continue;

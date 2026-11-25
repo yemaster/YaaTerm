@@ -55,7 +55,7 @@ int wordColor(std::string_view word, uint32_t hash) {
 }
 }
 void CodePreview::finishRow(Row &row, int end, bool wraps) {
-    if (!numbered) row.codeLine = continued ? ContinuedCodeLine : line;
+    row.codeLine = lineTag();
     auto ch = [&](int x) -> char32_t { return x < end ? row[x].ch : 0; };
     auto paint = [&](int start, int stop, int color) {
         for (int x=start; x<stop; ++x)
@@ -161,7 +161,7 @@ void CodePreview::finishRow(Row &row, int end, bool wraps) {
         if (mode == LineComment || (mode == String && !triple && quote != '`' && language != Shell &&
             language != Sql && !escaped)) mode = Normal;
         escaped = false;
-        if (line < ContinuedCodeLine-1) ++line;
+        if (line < CodeContinuation-1) ++line;
     }
 }
 }

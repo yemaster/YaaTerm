@@ -65,6 +65,7 @@ TerminalSearch::Result TerminalSearch::step(const Screen &screen, int rowBudget)
 }
 
 int fragmentEnd(const Row &row, int start, int columns) {
+    columns -= codeGutterColumns(row.codeLine,columns);
     int used = row.wrapAt ? row.wrapAt : row.used();
     int end = std::min(start+columns,used);
     if (end < used && row[end].width == 0) --end;
@@ -72,7 +73,8 @@ int fragmentEnd(const Row &row, int start, int columns) {
 }
 int fragmentStart(const Row &row, int column, int columns) {
     int start = 0;
-    while (start+columns <= column || (start+columns-1 == column && column+1<(int)row.size() && !row[column+1].width)) {
+    int span = columns-codeGutterColumns(row.codeLine,columns);
+    while (start+span <= column || (start+span-1 == column && column+1<(int)row.size() && !row[column+1].width)) {
         int end = fragmentEnd(row,start,columns);
         if (end <= start || end > column) break;
         start = end;
@@ -83,7 +85,7 @@ TextPoint moveDisplayRow(const Screen &screen, TextPoint point, bool forward) {
     if (forward) {
         if (point.row < screen.historySize()) {
             const auto &cells = screen.lineAt(point.row);
-            if ((int)cells.size() > screen.cols) {
+            if ((int)cells.size() > screen.cols || (cells.codeLine && cells.written > screen.cols-codeGutterColumns(cells.codeLine,screen.cols))) {
                 int end = fragmentEnd(cells,point.column,screen.cols);
                 if (end < (cells.wrapAt ? cells.wrapAt : cells.used())) return {point.row,end};
             }

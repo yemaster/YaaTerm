@@ -187,8 +187,17 @@ static void checkFilePreview(TerminalView *pane, Session *session, NSString *dir
     const auto &first = [pane displayRow:y];
     assert(first.codeLine == 1 && first[0].ch == 'd' && first[0].style.fg == yaa::CodeColor+5);
     assert([pane displayRow:y+1].codeLine == 2 && [pane displayRow:y+2].codeLine == 3);
-    assert([pane textOriginForRow:y] > 16);
+    CGFloat cellWidth = [[pane valueForKey:@"cw"] doubleValue];
+    assert([pane textOriginForRow:y] == 16+6*cellWidth && ![pane displayRow:y+3].codeLine);
     paint(pane,@"cat-code.png");
+    NSString *partial = [directory stringByAppendingPathComponent:@"last-line.py"];
+    assert([@"def greet():" writeToFile:partial atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+    run(@"PROMPT_EOL_MARK='~'\rcat last-line.py",@"partial-code");
+    int partialRow = output();
+    assert(partialRow >= 0 && [pane displayRow:partialRow].codeLine == 1 &&
+           [pane displayRow:partialRow][12].ch == '~' && ![pane displayRow:partialRow+1].codeLine);
+    run(@"[[ $PROMPT_EOL_MARK = '~' ]] && unset PROMPT_EOL_MARK\rcat 'sample code.py'",@"restored-code");
+    y = output(); assert(y >= 0);
     SetTerminalPreference(CodeOutput,NO);
     assert([pane textOriginForRow:y] == 16);
     run(@"cat 'sample code.py'",@"raw-code");
@@ -205,6 +214,31 @@ static void checkFilePreview(TerminalView *pane, Session *session, NSString *dir
     run(@"cat 'sample code.py' > copy.py",@"cat-copy");
     assert([[NSString stringWithContentsOfFile:[directory stringByAppendingPathComponent:@"copy.py"]
                     encoding:NSUTF8StringEncoding error:nil] isEqual:source]);
+
+    // Use a custom font and a narrow pane for four-digit line numbers and a wrapped URL.
+    NSString *sample = [[@"" stringByPaddingToLength:998 withString:@"\n" startingAtIndex:0]
+        stringByAppendingString:@"# Reference\nurl = 'https://example.org/reference/terminal/gutter'\nprint(url)\n"];
+    assert([sample writeToFile:[directory stringByAppendingPathComponent:@"reference.py"] atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+    NSSize original = pane.frame.size;
+    SetTerminalFontFamily(@"Menlo");
+    SetTerminalPreference(TerminalFontWeight,500);
+    [pane setFrameSize:NSMakeSize(350,240)];
+    run(@"cat reference.py",@"narrow-code");
+    cellWidth = [[pane valueForKey:@"cw"] doubleValue];
+    int rows = int((NSHeight(pane.bounds)-24)/[[pane valueForKey:@"lh"] doubleValue]);
+    BOOL firstLine = NO, continuation = NO;
+    for (int i=0;i<rows;++i) {
+        uint32_t tag = [pane displayRow:i].codeLine;
+        if ((tag & ~yaa::CodeContinuation) != 1000) continue;
+        CGFloat origin = [pane textOriginForRow:i];
+        assert(origin == 16+6*cellWidth);
+        NSPoint point = NSMakePoint(origin+((tag & yaa::CodeContinuation) ? 1.5 : 10.5)*cellWidth,[pane topOfRow:i]+3);
+        assert([[[pane linkAtPoint:point] absoluteString] isEqual:@"https://example.org/reference/terminal/gutter"]);
+        if (tag & yaa::CodeContinuation) continuation = YES; else firstLine = YES;
+    }
+    assert(firstLine && continuation);
+    paint(pane,@"cat-gutter-narrow.png");
+    [pane setFrameSize:original]; SetTerminalFontFamily(BundledFontFamily); SetTerminalPreference(TerminalFontWeight,0);
 }
 
 static void testTerminalOutput(NSString *directory) {

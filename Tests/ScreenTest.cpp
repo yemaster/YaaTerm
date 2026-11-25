@@ -58,7 +58,7 @@ static void checkAgentFrames() {
 }
 
 static void checkCodeOutput() {
-    Screen screen(18,5);
+    Screen screen(24,5);
     screen.commandExitToken = "test";
     auto context = [&](std::string_view kind) {
         screen.feed("\033]777;yaaterm-context;test;" + std::string(kind) + ";/tmp\a");
@@ -74,7 +74,7 @@ static void checkCodeOutput() {
     screen.setHistoryLimit(1);
     context("code:c");
     screen.feed("/* abcdefghijklmnopqrstuvwxyz\r\nstill a comment */\r\n");
-    assert(screen.lineAt(4).codeLine == 1 && screen.lineAt(5).codeLine == ContinuedCodeLine);
+    assert(screen.lineAt(4).codeLine == 1 && screen.lineAt(5).codeLine == (CodeContinuation|1));
     assert(screen.lineAt(5)[1].style.fg == CodeMuted && screen.lineAt(6)[1].style.fg == CodeMuted);
     context("numbered:python");
     screen.feed("    11\treturn 2\r\n");
@@ -85,20 +85,39 @@ static void checkCodeOutput() {
     screen.feed("\r\n");
     for (int i=0;i<85;++i) screen.feed("ordinary\r\n");
     screen.freeze(); screen.thaw();
-    assert(screen.archivedRows()>64 && screen.lineAt(2).codeLine == 2 && screen.lineAt(5).codeLine == ContinuedCodeLine);
+    assert(screen.archivedRows()>64 && screen.lineAt(2).codeLine == 2 && screen.lineAt(5).codeLine == (CodeContinuation|1));
     context("code:text");
     screen.feed("12345678901234567890\r\n"); context("cwd");
-    screen.resize(8,9); screen.resize(25,9);
+    screen.resize(8,9); screen.resize(28,9);
     int end = screen.y();
     assert(end > 0 && screen.row(end-1).codeLine == 1 && screen.row(end-1).written == 20);
     screen.feed("\033[2J"); assert(!screen.row(end-1).codeLine);
-    Screen narrow(6,5);
+    Screen narrow(12,5);
     narrow.setCodeOutput(true); narrow.commandExitToken = "ok";
     narrow.feed("\033]777;yaaterm-context;ok;code:c;/tmp\a12345/* abc*/int x\r\n");
     assert(narrow.row(1)[2].style.fg == CodeMuted && narrow.row(2)[1].style.fg == CodeColor+5);
     narrow.feed("\033]777;yaaterm-context;ok;code:text;/tmp\a");
     narrow.feed(std::string_view("\0AB\r\n",5));
     assert(!narrow.row(3).codeLine);
+
+    Screen source(18,7);
+    source.setCodeOutput(true); source.commandExitToken = "ok";
+    source.feed("\033]777;yaaterm-context;ok;code:text;/tmp\a");
+    for (int i=1;i<1000;++i) source.feed("\r\n");
+    source.feed("12345678901中-end\r\n\033]133;D\a");
+    int first = source.y()-2;
+    assert(source.row(first).codeLine == 1000 && source.row(first).wrapAt == 11);
+    assert(source.row(first+1).codeLine == (CodeContinuation|1000) && source.row(first+1)[0].width == 2);
+    TerminalSearch match(U"1中-end",false,{source.historySize()+first,0},source.historySize()+source.height);
+    assert(match.step(source,8) == TerminalSearch::Found);
+    source.feed("123456789012345678");
+    assert(!source.row(source.y()).codeLine && source.x() == 17);
+    source.resize(26,10);
+    bool merged = false;
+    for (int y=0;y<source.height;++y) if (source.row(y).codeLine == 1000) {
+        assert(!source.row(y).wrapAt && source.row(y).written == 17); merged = true;
+    }
+    assert(merged);
 }
 
 static void checkFailureAnchor() {

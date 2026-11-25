@@ -58,7 +58,7 @@ public:
         if (!alternate && !main.link) writeTag = tag;
     }
     void resetPresentation() { context = writeTag = main.link = alt.link = 0; }
-    void setCodeOutput(bool on) { showCode = on; if (!on) codePreview = {}; }
+    void setCodeOutput(bool on) { showCode = on; if (!on) { codePreview = {}; updateWriteColumns(); } }
     // Only the pane owning an acknowledged shell command can start a block.
     void beginAgentEcho() {
         lastAgentBlock = lastAgentBlock % 32767 + 1;
@@ -109,6 +109,12 @@ private:
     uint32_t context = 0, writeTag = 0;
     bool showCode = false;
     CodePreview codePreview;
+    int writeColumns = 0; // Full width outside a numbered source preview.
+    uint32_t writingCodeLine = 0;
+    void updateWriteColumns() {
+        writingCodeLine = codePreview.lineTag();
+        writeColumns = cols-codeGutterColumns(writingCodeLine,cols);
+    }
     void finishCode();
     std::deque<Row> history;
     std::unique_ptr<HistoryArchive> archive;

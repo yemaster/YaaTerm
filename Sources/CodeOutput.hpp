@@ -9,6 +9,8 @@ public:
     void begin(std::string_view kind);
     void finishRow(Row &row, int end, bool wraps);
     bool active() const { return language != None; }
+    uint32_t lineTag() const { return active() && !numbered ? line | (continued ? CodeContinuation : 0) : 0; }
+    void resumeRow(uint32_t tag) { if (tag && (tag & ~CodeContinuation) == line) continued = tag & CodeContinuation; }
 private:
     enum Language : uint8_t { None, Plain, CLike, JavaScript, Python, Shell, Json, Config, Sql };
     enum Mode : uint8_t { Normal, LineComment, BlockComment, String };

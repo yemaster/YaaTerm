@@ -674,7 +674,7 @@ struct PaintedLine {
                 if (index==end && !_screen->x()) continue;
                 break;
             }
-            int last=index==end ? std::min(_screen->x(),(int)row.size()) : std::min(row.written,(int)row.size());
+            int last=index==end ? std::min(_screen->x(),(int)row.size()) : std::min<int>(row.written,row.size());
             int first=_commandGeneration==_screen->historyGeneration && index==_commandRow && !outputStamp ? std::min(last,_commandColumn) : 0;
             last=textEnd(row,first,last);
             if (failed && anchor.row<0 && last>first) anchor={index,last-1};
@@ -1092,18 +1092,17 @@ struct PaintedLine {
     if (!_offset) return _screen->row(y);
     TextPoint p = [self displayPoint:y];
     const Row &row = _screen->lineAt(p.row);
-    if ((int)row.size() <= _screen->cols) return row;
+    if ((int)row.size() <= _screen->cols && (!row.codeLine || row.written <= _screen->cols-codeGutterColumns(row.codeLine,_screen->cols))) return row;
     int end = fragmentEnd(row,p.column,_screen->cols);
     _fragment.assign(row.begin()+p.column,row.begin()+end);
     _fragment.agentStamp = row.agentStamp;
-    _fragment.codeLine = p.column && row.codeLine ? ContinuedCodeLine : row.codeLine;
+    _fragment.codeLine = p.column && row.codeLine ? CodeContinuation | row.codeLine : row.codeLine;
     _fragment.written = end-p.column;
     _fragment.wrapAt = (end < row.used() || row.wrapAt) ? end-p.column : 0;
     return _fragment;
 }
-// Borrow the right inset for the gutter. Even a completely full row still fits.
 - (CGFloat)textOriginForRow:(int)y {
-    return _codeOutput && [self displayRow:y].codeLine ? 2*insetX-2 : insetX;
+    return insetX + (_codeOutput ? codeGutterColumns([self displayRow:y].codeLine,_screen->cols)*_cw : 0);
 }
 - (NSRange)findColumnsInRow:(int)y {
     if (!_findHit) return {};
@@ -1122,6 +1121,8 @@ struct PaintedLine {
     int end = std::min(_screen->cols,std::max(_anchor,_extent)-base+1);
     if (end <= start) return NSMakeRange(0,0);
     const auto &row = [self displayRow:y];
+    if (_codeOutput && row.codeLine) end = std::min(end,_screen->cols-codeGutterColumns(row.codeLine,_screen->cols));
+    if (end <= start) return {};
     // Either half of a double-width glyph selects and copies the whole character.
     if (start > 0 && start < (int)row.size() && row[start].width == 0) --start;
     if (end < _screen->cols && end < (int)row.size() && row[end].width == 0) ++end;
@@ -1210,7 +1211,6 @@ struct PaintedLine {
     BOOL present = _tables && !_screen->alternate && !selecting && !_findBar.field.stringValue.length;
     BOOL framed = _screen->agentOutputStamp()!=0;
     NSDictionary *gutterAttributes = nil;
-    NSSize digitSize = NSZeroSize;
     for (int y = first; y < end; ++y) {
         BOOL header = NO, drawn = NO;
         const Row *source = &[self displayRow:y];
@@ -1233,26 +1233,15 @@ struct PaintedLine {
         }
         if (drawn) continue;
         const auto &row = *source;
-        int count = std::min((int)row.size(),_screen->cols);
         CGFloat py = [self topOfRow:y];
-        CGFloat origin = insetX;
-        if (_codeOutput && row.codeLine) {
-            origin = 2*insetX-2;
-            if (row.codeLine != ContinuedCodeLine) {
-                if (!gutterAttributes) {
-                    NSFont *font = [NSFont monospacedDigitSystemFontOfSize:MIN(12,_fontSize*.77) weight:NSFontWeightRegular];
-                    gutterAttributes = @{NSFontAttributeName:font, NSForegroundColorAttributeName:CurrentInterfacePalette().secondaryText};
-                    digitSize = [@"0" sizeWithAttributes:gutterAttributes];
-                }
-                NSString *label = [@(row.codeLine) stringValue];
-                CGFloat fullWidth = digitSize.width*label.length, right = origin-6;
-                CGFloat width = MIN(fullWidth,right-2);
-                CGContextSaveGState(ctx);
-                CGContextTranslateCTM(ctx,right-width,py+floor((_lh-digitSize.height)/2));
-                CGContextScaleCTM(ctx,width/fullWidth,1);
-                [label drawAtPoint:NSZeroPoint withAttributes:gutterAttributes];
-                CGContextRestoreGState(ctx);
-            }
+        int gutter = _codeOutput ? codeGutterColumns(row.codeLine,_screen->cols) : 0;
+        int count = std::min((int)row.size(),_screen->cols-gutter);
+        CGFloat origin = insetX + gutter*_cw;
+        if (gutter && !(row.codeLine & CodeContinuation)) {
+            if (!gutterAttributes) gutterAttributes = @{NSFontAttributeName:_regular,NSLigatureAttributeName:@0,
+                NSForegroundColorAttributeName:CurrentInterfacePalette().secondaryText};
+            NSString *label = [@(row.codeLine) stringValue];
+            [label drawAtPoint:NSMakePoint(origin-(label.length+1)*_cw,py+_textOffsetY) withAttributes:gutterAttributes];
         }
 
         // Paint backgrounds independently of glyph shaping, then overlay the selection once.
@@ -1363,7 +1352,7 @@ struct PaintedLine {
     if (!_webLinks && !_fileLinks) return nil;
     int y=[self rowAtY:p.y];
     CGFloat origin = [self textOriginForRow:y];
-    if (!NSPointInRect(p,NSMakeRect(origin,[self topOfRow:y],_cw*_screen->cols,_lh))) return nil;
+    if (!NSPointInRect(p,NSMakeRect(origin,[self topOfRow:y],insetX+_cw*_screen->cols-origin,_lh))) return nil;
     int x = int((p.x-origin)/_cw);
     TextPoint start = [self displayPoint:y], point = {start.row,start.column+x};
     const auto &row = [self displayRow:y];

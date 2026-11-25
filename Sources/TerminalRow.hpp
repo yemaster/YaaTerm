@@ -8,7 +8,21 @@ constexpr int32_t Indexed = 1 << 24;
 // Presentation colors sit above the 256 ANSI entries and never come from SGR.
 constexpr int32_t CodeColor = Indexed + 256;
 constexpr int32_t CodeMuted = CodeColor + 8;
-constexpr uint32_t ContinuedCodeLine = (1u << 27)-1;
+constexpr uint32_t CodeContinuation = 1u << 27;
+// One cell on each side of the right-aligned number, with room for four digits in ordinary panes.
+inline int codeGutterColumns(uint32_t line, int columns) {
+    if (!line) return 0;
+    line &= CodeContinuation-1;
+    if (columns < 12) {
+        int minimum = 3;
+        for (; line >= 10; line /= 10) ++minimum;
+        if (minimum+2 > columns) return 0;
+        return minimum > columns/2 ? minimum : columns/2;
+    }
+    int gutter = 6;
+    while (line >= 10000) { ++gutter; line /= 10; }
+    return columns >= gutter+2 ? gutter : 0;
+}
 enum Attribute : uint8_t { Bold = 1, Underline = 2, Inverse = 4, Italic = 8 };
 struct Style {
     // A color is either RGB, a palette index, or the default sentinel.
@@ -29,10 +43,10 @@ struct Cell {
 };
 static_assert(sizeof(Cell) == 16);
 struct RowMetadata {
-    int written : 11;          // Includes trailing spaces. The grid is at most 1000 columns.
+    unsigned written : 10;     // Includes trailing spaces. The grid is at most 1000 columns.
     unsigned wrapAt : 10;      // Nonzero when the next row continues this one.
     uint64_t agentStamp : 16;  // Block ID and output/echo bit.
-    uint64_t codeLine : 27;    // Display only. Never changes the source cells.
+    uint64_t codeLine : 28;    // Logical line number plus the soft-wrap continuation bit.
     constexpr RowMetadata() : written(0), wrapAt(0), agentStamp(0), codeLine(0) {}
 };
 static_assert(sizeof(RowMetadata) == 8);

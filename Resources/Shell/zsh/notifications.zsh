@@ -6,6 +6,14 @@ _yaaterm_context() {
     builtin printf '\033]777;yaaterm-context;%s;%s;%s\007' "$_yaaterm_exit_token" "$1" "$dir" > "$TTY"
 }
 _yaaterm_prompt_context() {
+    if [[ -n ${_yaaterm_eol_prefix-} ]]; then
+        if [[ ${PROMPT_EOL_MARK-} == "${_yaaterm_eol_prefix}"* ]]; then
+            if (( _yaaterm_had_eol )); then PROMPT_EOL_MARK=${PROMPT_EOL_MARK#"${_yaaterm_eol_prefix}"}
+            else unset PROMPT_EOL_MARK
+            fi
+        fi
+        unset _yaaterm_eol_prefix _yaaterm_had_eol
+    fi
     if [[ -n $_yaaterm_listing || ${_yaaterm_last_dir-} != "$PWD" ]]; then
         _yaaterm_context cwd
         _yaaterm_last_dir=$PWD _yaaterm_listing=''
@@ -56,6 +64,13 @@ _yaaterm_code_context() {
         if [[ -z $family ]]; then family=$lang; elif [[ $family != $lang ]]; then family=text; fi
     done
     if [[ -n $family ]]; then
+        # zsh pads a partial line to the full PTY width before running precmd hooks.
+        # End the narrower code layout before that padding, including for custom prompt marks.
+        if [[ $mode == code ]]; then
+            [[ ${parameters[PROMPT_EOL_MARK]-} != *readonly* ]] || return
+            _yaaterm_eol_prefix=$'%{\e]133;D\a%}' _yaaterm_had_eol=${+PROMPT_EOL_MARK}
+            PROMPT_EOL_MARK="${_yaaterm_eol_prefix}${PROMPT_EOL_MARK-%B%S%#%s%b}"
+        fi
         _yaaterm_listing=$mode:$family
         _yaaterm_context "$_yaaterm_listing"
     fi
