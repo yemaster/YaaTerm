@@ -38,6 +38,7 @@
 - (void)showSettings;
 - (void)dismissSettings;
 - (void)addTab;
+- (void)addAgentTab:(NSString *)agent;
 - (void)selectIndex:(NSInteger)index;
 - (void)closeTabAt:(NSInteger)index;
 - (void)moveFrom:(NSInteger)from to:(NSInteger)to;

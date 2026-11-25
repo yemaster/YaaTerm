@@ -26,7 +26,9 @@
 - (NSString *)shellName { return _shellName; }
 - (BOOL)startAt:(NSString *)directory cols:(int)cols rows:(int)rows error:(NSError **)error {
     NSMutableDictionary *env = [NSProcessInfo.processInfo.environment mutableCopy];
-    NSString *shell = env[@"SHELL"];
+    NSString *agent = [@[@"codex",@"claude",@"agy",@"qodercn",@"omp"] containsObject:_launchAgent ?: @""] ? _launchAgent : nil;
+    env[@"YAATERM_LAUNCH_AGENT"] = agent;
+    NSString *shell = agent ? @"/bin/zsh" : env[@"SHELL"];
     if (![shell hasPrefix:@"/"] || ![NSFileManager.defaultManager isExecutableFileAtPath:shell]) {
         struct passwd *account = getpwuid(getuid());
         shell = account && account->pw_shell[0] ? [NSString stringWithUTF8String:account->pw_shell] : @"/bin/zsh";

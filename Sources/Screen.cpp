@@ -667,6 +667,20 @@ void Screen::finishOSC() {
             return;
         }
         if (take(';') != commandExitToken) return;
+        if (event=="yaaterm-begin") {
+            if (!alternate && commandBegan) commandBegan();
+            return;
+        }
+        if (event=="yaaterm-end") {
+            auto status = take(';');
+            if (status.empty()) return;
+            int value = 0;
+            auto end = status.data()+status.size();
+            auto parsed = std::from_chars(status.data(),end,value);
+            if (!alternate && promptReturned && parsed.ec==std::errc{} && parsed.ptr==end && value>=0 && value<=255)
+                promptReturned(value,data);
+            return;
+        }
         if (event=="yaaterm-agent") {
             agentCommand = isAgentCommand(data) ? data : std::string_view{};
             reportedTurn = false;

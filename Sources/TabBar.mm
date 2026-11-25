@@ -226,7 +226,7 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
     BOOL _slotsDirty;
     NSMutableArray<NSString *> *_titles;
     NSMutableArray<TabItem *> *_items; // Reusable on-screen slots. Overflow tabs only need a title.
-    NSButton *_add, *_more, *_settings, *_bell;
+    NSButton *_add, *_more, *_agent, *_settings, *_bell;
     TaskNoticePresenter *_notices;
     TabHighlight *_highlight;
     NSBox *_dropMark;
@@ -241,11 +241,12 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
         [self addSubview:_highlight];
         _add = symbolButton(@"plus",@"新建标签页（⌘T）",self,@selector(add:));
         _more = symbolButton(@"chevron.down",@"所有标签页",self,@selector(showAll:));
+        _agent = symbolButton(@"sparkles",@"切换 Agent 输入（⌘J）",self,@selector(toggleAssistant:));
         _settings = symbolButton(@"gearshape",@"设置（⌘,）",self,@selector(openSettings:));
         [_settings setAccessibilityRole:NSAccessibilityRadioButtonRole];
         [_settings setAccessibilityLabel:@"设置"];
         _bell = symbolButton(@"bell",@"通知",self,@selector(showNotices:));
-        for (NSButton *b in @[_add,_more,_settings,_bell]) {
+        for (NSButton *b in @[_add,_more,_agent,_settings,_bell]) {
             b.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:12 weight:NSFontWeightMedium];
             [self addSubview:b];
         }
@@ -261,10 +262,10 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
 }
 - (void)paletteChanged:(NSNotification *)note {
     const auto &colors = CurrentInterfacePalette();
-    for (NSButton *button in @[_add,_more,_settings]) button.contentTintColor = colors.secondaryText;
+    for (NSButton *button in @[_add,_more,_agent,_settings]) button.contentTintColor = colors.secondaryText;
     for (TabItem *item in _items) [item applyPalette];
     if (self.workspace.showingSettings) _settings.contentTintColor = colors.accent;
-    [_notices refresh]; [self updateBell]; [_highlight updateInk]; _dropMark.fillColor = colors.accent;
+    [self updateAssistantState]; [_notices refresh]; [self updateBell]; [_highlight updateInk]; _dropMark.fillColor = colors.accent;
 }
 - (NSSize)intrinsicContentSize { return NSMakeSize(NSViewNoIntrinsicMetric,barHeight); }
 - (BOOL)mouseDownCanMoveWindow { return YES; }
@@ -305,6 +306,7 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
 }
 - (void)positionHighlight:(BOOL)changed {
     BOOL settings = self.workspace.showingSettings;
+    [self updateAssistantState];
     [_settings setAccessibilityValue:@(settings)];
     _settings.contentTintColor = settings ? CurrentInterfacePalette().accent : CurrentInterfacePalette().secondaryText;
     TabItem *item = [self itemForSelection:_selected];
@@ -349,7 +351,7 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
     BOOL reconfigured = _slotsDirty;
     if (reconfigured) [self rebuildSlots];
     NSInteger n = (NSInteger)_slots.size();
-    CGFloat available = MAX(0,NSWidth(self.bounds)-toolWidth-2*gearWidth-trailingInset-2*actionGap-2);
+    CGFloat available = MAX(0,NSWidth(self.bounds)-toolWidth-3*gearWidth-trailingInset-2*actionGap-4);
     auto span = [&](NSInteger first,NSInteger last) { return _slots[last].x+_slots[last].width-_slots[first].x; };
     BOOL overflow = n && span(0,n-1)>available;
     if (overflow) available = MAX(0,available-toolWidth);
@@ -399,11 +401,24 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
     _add.frame = NSMakeRect(end+(overflow ? toolWidth : 0),y,toolWidth,itemHeight);
     _bell.frame = NSMakeRect(NSWidth(self.bounds)-gearWidth-trailingInset,y,gearWidth,itemHeight);
     _settings.frame = NSMakeRect(NSMinX(_bell.frame)-gearWidth-2,y,gearWidth,itemHeight);
+    _agent.frame = NSMakeRect(NSMinX(_settings.frame)-gearWidth-2,y,gearWidth,itemHeight);
     [self positionHighlight:_animateAfterLayout]; _animateAfterLayout = NO;
     if (_nameField) [self positionNameEditor];
 }
 - (void)setFrameSize:(NSSize)size { [super setFrameSize:size]; self.needsLayout = YES; }
 - (void)add:(id)sender { if (_onAdd) _onAdd(); }
+- (void)updateAssistantState {
+    BOOL selected=self.workspace.focused.assistantVisible;
+    BOOL enabled=self.workspace.focused!=nil;
+    if (_agent.enabled!=enabled) _agent.enabled=enabled;
+    NSColor *tint=selected ? CurrentInterfacePalette().accent : CurrentInterfacePalette().secondaryText;
+    if (_agent.contentTintColor!=tint) _agent.contentTintColor=tint;
+    NSString *label=selected ? @"收起 Agent（⌘J）" : @"切换 Agent 输入（⌘J）";
+    if (![_agent.toolTip isEqual:label]) {
+        [_agent setAccessibilityValue:@(selected)]; [_agent setAccessibilityLabel:label]; _agent.toolTip=label;
+    }
+}
+- (void)toggleAssistant:(id)sender { [self.workspace.focused toggleAssistant:sender]; }
 - (void)openSettings:(id)sender { [self.workspace showSettings]; }
 - (void)updateBell {
     NSUInteger count = TaskNotice.unreadCount;
@@ -582,7 +597,7 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
     for (TabItem *item in _items) {
         BOOL matches = _namingGroup ? item.tag<0 && item.group==_namingGroup : item.tag==index;
         if (!matches) continue;
-        CGFloat right = MAX(0.,NSMinX(_settings.frame)-actionGap);
+        CGFloat right = MAX(0.,NSMinX(_agent.frame)-actionGap);
         CGFloat width = MIN(right,MAX(minWidth,NSWidth(item.frame)));
         _nameField.frame = NSMakeRect(MIN(NSMinX(item.frame),right-width),floor(NSMidY(item.frame)-11),width,22);
         return;

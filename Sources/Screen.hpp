@@ -56,6 +56,8 @@ public:
         if (!alternate && !main.link) writeTag = tag;
     }
     void resetPresentation() { context = writeTag = main.link = alt.link = 0; }
+    std::function<void()> commandBegan;
+    std::function<void(int,std::string_view)> promptReturned;
     static bool isAgentCommand(std::string_view name);
     std::function<void(std::string_view,int,int)> commandExited;
     std::function<void(std::string_view,bool,std::string_view)> agentFinished;

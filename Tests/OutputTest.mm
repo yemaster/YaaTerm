@@ -1,4 +1,5 @@
 #import "TerminalView.h"
+#import "AssistantPanel.h"
 #import "TerminalOutput.h"
 #import "Preferences.h"
 #import "Session.h"
@@ -249,6 +250,26 @@ static void testTerminalOutput(NSString *directory) {
     SetTerminalPreference(RevealFileLinks,NO);
     [pane setLinkModifierDown:YES]; hover(label); assert(!hand() && !tracking());
     assert(![pane linkAtPoint:NSMakePoint(16+2*cw,12+lh*1.5)]);
+    assert(![pane valueForKey:@"assistant"]);
+    send(@"cd /yaaterm-no-such-directory\r");
+    until(^BOOL{ return pane.hasFailedCommand; });
+    NSDictionary *failure=[pane valueForKey:@"failure"];
+    assert([failure[@"command"] isEqual:@"cd /yaaterm-no-such-directory"] && [failure[@"status"] intValue]!=0);
+    assert([failure[@"output"] containsString:@"yaaterm-no-such-directory"] && ![failure[@"output"] containsString:@"example.org"]);
+    send(@"yaaterm_no_such_executable\r");
+    until(^BOOL{ return [[[pane valueForKey:@"failure"] objectForKey:@"status"] intValue]==127; });
+    [pane toggleAssistant:nil]; AssistantPanel *panel=[pane valueForKey:@"assistant"];
+    assert(panel && NSMaxY(panel.frame)==NSHeight(pane.bounds));
+    [pane toggleAssistant:nil]; assert(panel.hidden);
+    [pane toggleAssistant:nil]; assert(!panel.hidden);
+    NSString *proof=[directory stringByAppendingPathComponent:@"confirmed.txt"];
+    NSString *suggestion=@"print -r verified > \"$ZDOTDIR/confirmed.txt\"";
+    __block BOOL inserted=NO;
+    until(^BOOL{ if (!inserted) inserted=panel.onInsert(suggestion); return inserted; });
+    assert(!panel.onInsert(@"echo second") && ![NSFileManager.defaultManager fileExistsAtPath:proof]);
+    send(@"\r");
+    until(^BOOL{ return !pane.hasFailedCommand && [NSFileManager.defaultManager fileExistsAtPath:proof]; });
+    assert([[NSString stringWithContentsOfFile:proof encoding:NSUTF8StringEncoding error:nil] isEqual:@"verified\n"]);
     [pane stop];
     puts("Output: listing formats, real ls/df/git, table toggles, reflow, historical cwd and Command-hover for file, plain and OSC 8 links OK");
 }

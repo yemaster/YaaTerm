@@ -119,6 +119,13 @@ read -r reply
         send(@"print -r -- \"PLUGIN[$+functions[_zsh_highlight],$+parameters[ZSH_HIGHLIGHT_VERSION]]\"\r");
         waitFor(^bool{ return contains(@"PLUGIN[1,0]\r\n"); });
         send(@"exit\r"); waitFor(^bool{return (bool)exited;});
+        // Dedicated local-Agent tabs start after login setup, from their own working directory.
+        exited = NO; [output setLength:0]; session.launchAgent=@"codex";
+        assert([session startAt:dir cols:100 rows:24 error:nil]);
+        screen.commandExitToken=session.commandExitToken.UTF8String;
+        waitFor(^bool{ return contains(@"\033]2;waiting-codex\007"); });
+        send(@"next\r"); waitFor(^bool{ return screen.bracketPaste; });
+        send(@"exit\r"); waitFor(^bool{ return (bool)exited; });
         assert([files removeItemAtPath:dir error:nil]);
         puts("Real zsh PTY: live colors, login startup order, long paste, foreground process exit, suspended job filtering and existing highlighter OK");
     }

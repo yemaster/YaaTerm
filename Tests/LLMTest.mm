@@ -1,5 +1,7 @@
 #import "LLMConfiguration.h"
 #import "LLMSettingsForm.h"
+#import "AssistantPanel.h"
+#import <objc/runtime.h>
 #import "SettingsView.h"
 #import <Security/Security.h>
 #include <cassert>
@@ -41,6 +43,7 @@ static void waitFor(BOOL (^done)(void)) {
 @end
 static NSInteger httpCode;
 static NSData *replyData;
+static NSDictionary *(^scriptedReply)(NSDictionary *request);
 @implementation FixtureProtocol
 + (BOOL)canInitWithRequest:(NSURLRequest *)request { return [request.URL.host isEqual:@"fixture.invalid"]; }
 + (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request { return request; }
@@ -48,7 +51,20 @@ static NSData *replyData;
     NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:httpCode
         HTTPVersion:@"HTTP/1.1" headerFields:@{@"Content-Type":@"application/json"}];
     [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
-    [self.client URLProtocol:self didLoadData:replyData];
+    NSData *data=replyData;
+    if (scriptedReply) {
+        NSData *payload=self.request.HTTPBody;
+        if (!payload) {
+            NSInputStream *stream=self.request.HTTPBodyStream;
+            [stream open]; NSMutableData *bytes=[NSMutableData data];
+            uint8_t buffer[2048]; NSInteger size;
+            while ((size=[stream read:buffer maxLength:sizeof(buffer)])>0) [bytes appendBytes:buffer length:size];
+            [stream close]; payload=bytes;
+        }
+        NSDictionary *body=[NSJSONSerialization JSONObjectWithData:payload options:0 error:nil];
+        data=[NSJSONSerialization dataWithJSONObject:scriptedReply(body) options:0 error:nil];
+    }
+    [self.client URLProtocol:self didLoadData:data];
     [self.client URLProtocolDidFinishLoading:self];
 }
 - (void)stopLoading {}
@@ -158,7 +174,109 @@ static void checkForm() {
     click([reopened valueForKey:@"test"]);
     assert([[(NSTextField *)[reopened valueForKey:@"status"] stringValue] containsString:@"重新输入"]);
 }
+@interface FixtureConfig (AssistantTest)
++ (void)loadFixture:(void (^)(LLMConfiguration *,NSString *))completion;
+@end
+@implementation FixtureConfig (AssistantTest)
++ (void)loadFixture:(void (^)(LLMConfiguration *,NSString *))completion {
+    completion(profile(@"https://fixture.invalid/v1",LLMChatCompletions),nil);
+}
+@end
+
+static void checkAssistant() {
+    for (NSInteger i=0;i<3;++i) {
+        FixtureConfig *config=profile(@"https://fixture.invalid/v1",(LLMAPIFormat)i);
+        httpCode=200; scriptedReply=^NSDictionary *(NSDictionary *body) {
+            if (i==LLMResponses) {
+                assert([body[@"input"] isEqual:@"input"] && [body[@"instructions"] isEqual:@"rules"] && [body[@"store"] isEqual:@NO]);
+                return @{@"object":@"response",@"status":@"completed",@"output":@[@{@"type":@"reasoning"},
+                    @{@"type":@"message",@"role":@"assistant",@"content":@[@{@"type":@"output_text",@"text":@"fixed"}]}]};
+            }
+            if (i==LLMAnthropicMessages) {
+                assert([body[@"system"] isEqual:@"rules"]);
+                return @{@"type":@"message",@"role":@"assistant",@"content":@[@{@"type":@"thinking",@"thinking":@"hidden"},
+                    @{@"type":@"text",@"text":@"fixed"}]};
+            }
+            assert([body[@"messages"][0][@"role"] isEqual:@"system"] && [body[@"messages"][1][@"content"] isEqual:@"input"]);
+            return @{@"choices":@[@{@"message":@{@"content":@"fixed"}}]};
+        };
+        __block BOOL done=NO;
+        [config ask:@"input" instruction:@"rules" completion:^(NSString *value,NSString *error) {
+            assert(!error && [value isEqual:@"fixed"] && NSThread.isMainThread); done=YES;
+        }];
+        waitFor(^BOOL{ return done; });
+    }
+
+    NSFileManager *files=NSFileManager.defaultManager;
+    NSString *dir=[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    assert([files createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil]);
+    assert([@"alpha" writeToFile:[dir stringByAppendingPathComponent:@"sample.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+    assert([files createSymbolicLinkAtPath:[dir stringByAppendingPathComponent:@"shortcut"] withDestinationPath:@"/etc/hosts" error:nil]);
+    Method saved=class_getClassMethod(LLMConfiguration.class,@selector(loadSaved:));
+    IMP original=method_setImplementation(saved,method_getImplementation(class_getClassMethod(FixtureConfig.class,@selector(loadFixture:))));
+    AssistantPanel *panel=[[AssistantPanel alloc] initWithDirectory:dir shell:@"zsh"];
+    __block BOOL completed=NO; __block int proposals=0;
+    panel.onComplete=^(NSString *summary){ assert([summary isEqual:@"已核对"]); completed=YES; };
+    panel.onInsert=^BOOL(NSString *cmd){ ++proposals; return [cmd isEqual:@"wc -l sample.txt"]; };
+    scriptedReply=^NSDictionary *(NSDictionary *body) {
+        NSString *input=[body[@"messages"] lastObject][@"content"];
+        NSDictionary *task=[NSJSONSerialization JSONObjectWithData:[input dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+        NSArray *steps=task[@"steps"]; NSString *json;
+        switch (steps.count) {
+            case 0: json=@"{\"action\":\"list\",\"path\":\".\"}"; break;
+            case 1: assert([steps[0][@"result"] containsString:@"sample.txt"]);
+                json=@"{\"action\":\"read\",\"path\":\"shortcut\"}"; break;
+            case 2: assert([steps[1][@"result"] containsString:@"无法"]);
+                json=@"{\"action\":\"read\",\"path\":\"sample.txt\"}"; break;
+            case 3: assert([steps[2][@"result"] isEqual:@"alpha"]);
+                json=@"{\"text\":\"统计行数\",\"command\":\"wc -l sample.txt\"}"; break;
+            default: assert([steps.lastObject[@"output"] isEqual:@"1 sample.txt"]);
+                json=@"{\"text\":\"已核对\"}"; break;
+        }
+        return @{@"choices":@[@{@"message":@{@"content":json}}]};
+    };
+    NSTextField *input=[panel valueForKey:@"input"]; input.stringValue=@"核对文件"; click(input);
+    NSButton *action=[panel valueForKey:@"action"];
+    waitFor(^BOOL{ return !action.hidden; });
+    assert(!proposals && !completed && [action.title isEqual:@"填入终端"]);
+    for (CGFloat width : {620.,320.,185.}) {
+        panel.frame=NSMakeRect(0,0,width,[panel heightForWidth:width]); [panel layoutSubtreeIfNeeded];
+        assert(NSContainsRect(panel.bounds,input.frame) && NSContainsRect(panel.bounds,action.frame));
+        assert(!NSIntersectsRect(input.frame,action.frame));
+        NSString *preview=NSProcessInfo.processInfo.environment[@"YAATERM_TEST_PREVIEW"];
+        if (preview) {
+            NSWindow *window=[[NSWindow alloc] initWithContentRect:panel.bounds styleMask:NSWindowStyleMaskBorderless
+                backing:NSBackingStoreBuffered defer:YES];
+            [window.contentView addSubview:panel]; [panel layoutSubtreeIfNeeded];
+            NSBitmapImageRep *bitmap=[panel bitmapImageRepForCachingDisplayInRect:panel.bounds];
+            [panel cacheDisplayInRect:panel.bounds toBitmapImageRep:bitmap];
+            NSString *name=[NSString stringWithFormat:@"agent-%.0f.png",width];
+            [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:[preview stringByAppendingPathComponent:name] atomically:YES];
+            [panel removeFromSuperview];
+        }
+    }
+    click(action); assert(proposals==1 && panel.expectedCommand);
+    [panel receivedResult:@{@"command":panel.expectedCommand,@"status":@0,@"output":@"1 sample.txt"}];
+    waitFor(^BOOL{ return completed; }); assert(!panel.expectedCommand);
+    scriptedReply=^NSDictionary *(NSDictionary *body) {
+        NSDictionary *task=[NSJSONSerialization JSONObjectWithData:[[body[@"messages"] lastObject][@"content"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+        assert([task[@"failure"][@"status"] isEqual:@127] && [task[@"mode"] isEqual:@"diagnose"]);
+        return @{@"choices":@[@{@"message":@{@"content":@"{\"text\":\"拼写有误\",\"command\":\"ls\\nwhoami\"}"}}]};
+    };
+    [panel explain:@{@"command":@"lss",@"status":@127,@"output":@"command not found"}];
+    waitFor(^BOOL{ return ![[panel valueForKey:@"busy"] boolValue]; });
+    assert(action.hidden && !panel.expectedCommand);
+    // A stopped request must not publish a late result or continue inspecting files.
+    scriptedReply=^NSDictionary *(NSDictionary *) {
+        return @{@"choices":@[@{@"message":@{@"content":@"late reply"}}]};
+    };
+    completed=NO; input.stringValue=@"取消这次任务"; click(input); click([panel valueForKey:@"send"]);
+    [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.08]];
+    assert(!completed && [[(NSTextView *)[panel valueForKey:@"text"] string] isEqual:@"已停止"]);
+    scriptedReply=nil; method_setImplementation(saved,original);
+    assert([files removeItemAtPath:dir error:nil]);
+}
 int main() {
-    @autoreleasepool { checkProtocols(); checkForm(); }
-    puts("Three LLM wire formats, bounded URLSession probes, settings layout, Keychain save/reopen and failure fixtures OK");
+    @autoreleasepool { checkProtocols(); checkForm(); checkAssistant(); }
+    puts("Three LLM wire formats, Keychain, agent directory/read loop, reviewed shell continuation and error diagnosis OK");
 }

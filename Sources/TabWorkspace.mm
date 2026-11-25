@@ -246,7 +246,7 @@ static NSSize minPane(NSView *view) {
     __weak TerminalTab *weakTab = tab;
     pane.didFocus = ^(TerminalView *v) {
         TerminalTab *t = weakTab;
-        if (t && t.focused != v) { t.focused = v; [t.owner showTitleFor:t]; }
+        if (t && t.focused != v) { t.focused = v; [t.owner showTitleFor:t]; [t.owner.tabBar updateAssistantState]; }
     };
     pane.didRename = ^(TerminalView *v) {
         TerminalTab *t = weakTab;
@@ -263,6 +263,11 @@ static NSSize minPane(NSView *view) {
         TerminalTab *t = weakTab;
         [t.owner finishedCommand:name status:status seconds:seconds inPane:v tab:t];
     };
+    pane.assistantVisibilityChanged = ^{ [weakTab.owner.tabBar updateAssistantState]; };
+    pane.configureAI = ^{
+        TabWorkspace *owner=weakTab.owner;
+        if (owner) { [owner showSettings]; [owner->_settingsView selectSection:APISection]; }
+    };
     pane.revealTask = ^(TerminalView *v) {
         TerminalTab *t = weakTab;
         TabWorkspace *owner = t.owner;
@@ -278,26 +283,28 @@ static NSSize minPane(NSView *view) {
     };
     return pane;
 }
-- (void)addTab {
+- (void)addTab { [self addAgentTab:nil]; }
+- (void)addAgentTab:(NSString *)agent {
     NSInteger slot = _active ? self.selectedIndex+1 : 0;
     TabGroup *group = _active.group;
     if (group && (group.collapsed || self.showingSettings)) {
         slot = NSMaxRange([self rangeOfGroup:group]); group = nil;
     }
-    [self addTabAt:slot group:group];
+    [self addTabAt:slot group:group agent:agent];
 }
 - (void)addTabInGroup:(TabGroup *)group {
     NSRange range = [self rangeOfGroup:group];
-    if (range.length) [self addTabAt:NSMaxRange(range) group:group];
+    if (range.length) [self addTabAt:NSMaxRange(range) group:group agent:nil];
 }
-- (void)addTabAt:(NSInteger)index group:(TabGroup *)group {
+- (void)addTabAt:(NSInteger)index group:(TabGroup *)group agent:(NSString *)agent {
+    NSString *directory=agent ? self.focused.workingDirectory : nil;
     TerminalTab *tab = [TerminalTab new]; tab.group = group;
     tab.root = [[NSView alloc] initWithFrame:self.bounds];
     tab.root.autoresizingMask = NSViewWidthSizable|NSViewHeightSizable;
     TerminalView *pane = [self makePane:tab.root.bounds forTab:tab];
     [tab.root addSubview:pane]; tab.focused = pane;
     [self insertTab:tab atIndex:index];
-    [pane start];
+    if (agent) [pane startAt:directory ?: NSHomeDirectory() agent:agent]; else [pane start];
 }
 - (void)insertTab:(TerminalTab *)tab atIndex:(NSInteger)index {
     tab.owner = self;

@@ -1,9 +1,11 @@
 #include "Emoji.hpp"
 #import "TerminalView.h"
 #import "FindBar.h"
+#import "AssistantPanel.h"
 #import "TerminalOutput.h"
 #include "TerminalSearch.hpp"
 #include <climits>
+#include <signal.h>
 #include <optional>
 #import "Session.h"
 #import "Preferences.h"
@@ -88,6 +90,13 @@ static NSString *cellText(const Row &row, int start, int end, bool trim) {
     std::vector<TextPoint> _visibleRows;
     Row _fragment;
     FindBar *_findBar;
+    AssistantPanel *_assistant;
+    NSButton *_fixButton;
+    NSDictionary *_failure;
+    int64_t _commandRow;
+    int _commandColumn;
+    uint64_t _commandGeneration;
+    BOOL _insideCommand, _atPrompt, _promptEdited;
     BOOL _tables, _webLinks, _fileLinks;
     OutputReferences *_references;
     NSMutableDictionary<NSNumber *, NSButton *> *_listingButtons;
@@ -141,6 +150,15 @@ static NSString *cellText(const Row &row, int start, int end, bool trim) {
                 pane.agentFinished(pane,label,failed,text);
             }
         };
+        _screen->commandBegan = [weak] {
+            TerminalView *v=weak;
+            if (!v) return;
+            v->_atPrompt=NO; v->_insideCommand=YES;
+            v->_commandGeneration=v->_screen->historyGeneration;
+            v->_commandRow=v->_screen->historySize()+v->_screen->y(); v->_commandColumn=v->_screen->x();
+            if (v->_failure) [v clearFailure];
+        };
+        _screen->promptReturned = [weak](int status,std::string_view line) { [weak promptReturned:status line:line]; };
         _screen->commandExited = [weak](std::string_view name, int status, int seconds) {
             TerminalView *pane = weak;
             if (pane.commandExited) {
@@ -519,7 +537,7 @@ struct PaintedLine {
             self.needsDisplay = YES;
         }
     }
-    if ([note.object isEqual:TerminalColorScheme]) { [_findBar applyPalette]; self.needsDisplay = YES; }
+    if ([note.object isEqual:TerminalColorScheme]) { [_findBar applyPalette]; [_assistant refreshAppearance]; self.needsDisplay = YES; }
     if ([note.object isEqual:TerminalFontSize]) [self adjustFont:0];
     if ([note.object isEqual:TerminalFontFamily] || [note.object isEqual:TerminalFontWeight]) [self applyFontChange];
     if ([note.object isEqual:ScrollbackLines]) {
@@ -538,10 +556,101 @@ struct PaintedLine {
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)becomeFirstResponder { [self reportFocus:self.window.isKeyWindow]; self.needsDisplay = YES; if (_didFocus) _didFocus(self); return YES; }
 - (BOOL)resignFirstResponder { [self reportFocus:NO]; [self unmarkText]; self.needsDisplay = YES; return YES; }
-- (void)start {
+- (void)clearFailure {
+    _failure=nil; [_fixButton removeFromSuperview]; _fixButton=nil;
+}
+- (BOOL)hasFailedCommand { return _failure!=nil; }
+- (void)promptReturned:(int)status line:(std::string_view)line {
+    BOOL began=_insideCommand;
+    _insideCommand=NO; _atPrompt=YES; _promptEdited=NO;
+    BOOL awaiting=_assistant.expectedCommand!=nil;
+    if (!began || (!awaiting && (!status || status==130 || status==128+SIGTSTP || line.empty()))) return;
+    NSString *command=[[NSString alloc] initWithBytes:line.data() length:line.size() encoding:NSUTF8StringEncoding] ?: @"";
+    BOOL matches=awaiting && [_assistant.expectedCommand isEqual:command];
+    NSMutableArray *rows=[NSMutableArray array];
+    if (_commandGeneration==_screen->historyGeneration && (matches || status)) {
+        int64_t end=_screen->historySize()+_screen->y();
+        NSUInteger used=0;
+        for (int64_t index=end; index>=std::max(_commandRow,end-23) && used<3072; --index) {
+            const Row &row=_screen->lineAt(index);
+            int last=index==end ? std::min(_screen->x(),(int)row.size()) : std::min(row.written,(int)row.size());
+            int first=index==_commandRow ? std::min(last,_commandColumn) : 0;
+            NSString *text=cellText(row,first,last,true);
+            if (row.wrapAt==0 && rows.count) text=[text stringByAppendingString:@"\n"];
+            if (text.length) { [rows addObject:text]; used+=text.length; }
+        }
+    }
+    NSString *output=[[[rows reverseObjectEnumerator] allObjects] componentsJoinedByString:@""];
+    if (output.length>3072) {
+        NSRange first=[output rangeOfComposedCharacterSequenceAtIndex:output.length-3072];
+        output=[output substringFromIndex:NSMaxRange(first)];
+    }
+    NSDictionary *record=@{@"command":command,@"status":@(status),@"output":output};
+    if (awaiting) [_assistant receivedResult:record];
+    if (status && status!=130 && status!=128+SIGTSTP && command.length) {
+        _failure=record;
+        _fixButton=[NSButton buttonWithTitle:@"解释错误" target:self action:@selector(explainFailure:)];
+        _fixButton.bezelStyle=NSBezelStyleRounded; _fixButton.controlSize=NSControlSizeSmall;
+        _fixButton.toolTip=@"解释这条失败的命令（⌘⇧E）"; [_fixButton setAccessibilityLabel:_fixButton.toolTip];
+        [self addSubview:_fixButton]; [self positionAssistant];
+    }
+}
+- (CGFloat)positionAssistant {
+    CGFloat height=(_assistant && !_assistant.hidden) ? MIN([_assistant heightForWidth:NSWidth(self.bounds)],MAX(0.,NSHeight(self.bounds)-_lh-2*insetY)) : 0;
+    if (_assistant) _assistant.frame=NSMakeRect(0,NSHeight(self.bounds)-height,NSWidth(self.bounds),height);
+    if (_fixButton) {
+        _fixButton.hidden=_assistant && !_assistant.hidden;
+        _fixButton.frame=NSMakeRect(MAX(0.,NSWidth(self.bounds)-84),MAX(0.,NSHeight(self.bounds)-29),76,23);
+    }
+    return height;
+}
+- (BOOL)assistantVisible { return _assistant && !_assistant.hidden; }
+- (void)closeAssistant {
+    [_assistant cancel]; [_assistant removeFromSuperview]; _assistant=nil;
+    [self sizeTerminal]; [self.window makeFirstResponder:self];
+    if (_assistantVisibilityChanged) _assistantVisibilityChanged();
+}
+- (AssistantPanel *)openAssistant {
+    if (!_assistant) {
+        _assistant=[[AssistantPanel alloc] initWithDirectory:_session.workingDirectory shell:_session.shellName];
+        __weak TerminalView *weak=self;
+        _assistant.currentDirectory=^NSString *{ return weak.workingDirectory; };
+        _assistant.onFocus=^{ TerminalView *v=weak; if (v.didFocus) v.didFocus(v); };
+        _assistant.onClose=^{ [weak closeAssistant]; };
+        _assistant.onLayout=^{ [weak sizeTerminal]; };
+        _assistant.onConfigure=^{ TerminalView *v=weak; if (v.configureAI) v.configureAI(); };
+        _assistant.onInsert=^BOOL(NSString *command) {
+            TerminalView *v=weak;
+            if (!v || !v->_atPrompt || v->_promptEdited || v->_ended || v->_screen->alternate || ![v->_session shellIsForeground] || !v->_screen->bracketPaste) return NO;
+            [v.window makeFirstResponder:v];
+            [v sendString:[NSString stringWithFormat:@"\033[200~%@\033[201~",command]]; return YES;
+        };
+        _assistant.onComplete=^(NSString *summary) {
+            TerminalView *v=weak; if (v.agentFinished) v.agentFinished(v,@"Agent",NO,summary);
+        };
+        [self addSubview:_assistant]; [self sizeTerminal];
+    }
+    if (_assistant.hidden) { _assistant.hidden=NO; [self sizeTerminal]; }
+    if (_didFocus) _didFocus(self);
+    [_assistant focusInput]; if (_assistantVisibilityChanged) _assistantVisibilityChanged();
+    return _assistant;
+}
+- (void)toggleAssistant:(id)sender {
+    if (!_assistant || _assistant.hidden) { [self openAssistant]; return; }
+    _assistant.hidden=YES; [self sizeTerminal]; [self.window makeFirstResponder:self];
+    if (_assistantVisibilityChanged) _assistantVisibilityChanged();
+}
+- (void)explainFailure:(id)sender {
+    if (!_failure) { NSBeep(); return; }
+    [[self openAssistant] explain:_failure];
+}
+- (NSString *)workingDirectory { return _session.workingDirectory; }
+- (void)start { [self startAt:NSHomeDirectory() agent:nil]; }
+- (void)startAt:(NSString *)directory agent:(NSString *)agent {
+    _session.launchAgent=agent;
     [self sizeTerminal];
     NSError *error;
-    if (![_session startAt:NSHomeDirectory() cols:_screen->cols rows:_screen->height error:&error]) {
+    if (![_session startAt:directory cols:_screen->cols rows:_screen->height error:&error]) {
         [self finish:[NSString stringWithFormat:@"无法启动 shell · %@",error.localizedDescription]]; return;
     }
     _screen->commandExitToken = _session.commandExitToken.UTF8String ?: "";
@@ -549,16 +658,17 @@ struct PaintedLine {
     if (_didRename) _didRename(self);
 }
 - (void)finish:(NSString *)message {
-    _ended = YES; _sessionTitle = message;
+    _ended = YES; _atPrompt=NO; [_assistant cancel]; _sessionTitle = message;
     NSString *line = [NSString stringWithFormat:@"\r\n\033[0m[%@]\r\n",message];
     [self consume:std::string_view(line.UTF8String)];
     if (_didRename) _didRename(self);
 }
-- (void)stop { [_session close]; }
+- (void)stop { [_assistant cancel]; [_session close]; }
 - (void)setFrameSize:(NSSize)size { [super setFrameSize:size]; if (_screen && _cw) [self sizeTerminal]; }
 - (void)sizeTerminal {
     int w = std::clamp((int)((self.bounds.size.width-2*insetX)/_cw),2,1000);
-    int h = std::clamp((int)((self.bounds.size.height-2*insetY)/_lh),1,500);
+    CGFloat assistantHeight=(_assistant || _fixButton) ? [self positionAssistant] : 0;
+    int h = std::clamp((int)((self.bounds.size.height-assistantHeight-2*insetY)/_lh),1,500);
     if (w == _screen->cols && h == _screen->height) { if (_findBar && !_wakeOnActivity) [self positionFindBar]; return; }
     if (_wakeOnActivity) [self wakeForActivity];
     [self clearListingButtons];
@@ -1038,6 +1148,7 @@ struct PaintedLine {
     [NSPasteboard.generalPasteboard setString:text forType:NSPasteboardTypeString];
 }
 - (void)sendString:(NSString *)str {
+    if (_atPrompt) _promptEdited=YES;
     if (_offset || _anchor != -1) { _offset = 0; _topColumn = 0; _visibleRows.clear(); _anchor = _extent = -1; self.needsDisplay = YES; }
     [_session send:[str dataUsingEncoding:NSUTF8StringEncoding]];
 }
@@ -1066,7 +1177,7 @@ struct PaintedLine {
     CGFloat height = [_findBar heightForWidth:width];
     NSRect top = NSMakeRect(NSWidth(self.bounds)-width-margin,margin,width,height);
     NSRect bottom = top;
-    bottom.origin.y = MAX(margin,NSHeight(self.bounds)-height-margin);
+    bottom.origin.y = MAX(margin,NSHeight(self.bounds)-NSHeight(_assistant.frame)-height-margin);
     NSRect frame = _findAtBottom ? bottom : top;
     if (_findHit && [self findHitIntersects:frame]) {
         NSRect other = _findAtBottom ? top : bottom;
@@ -1232,6 +1343,7 @@ struct PaintedLine {
             if (chars.length == 1) {
                 unichar c = [chars characterAtIndex:0];
                 if (c == ' ' || (c >= '@' && c <= '_') || (c >= 'a' && c <= 'z')) {
+                    if (_atPrompt) _promptEdited=YES;
                     uint8_t b = c & 31; [_session send:[NSData dataWithBytes:&b length:1]]; return;
                 }
             }

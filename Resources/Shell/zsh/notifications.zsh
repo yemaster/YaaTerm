@@ -16,6 +16,11 @@ _yaaterm_command_start() {
     emulate -L zsh
     setopt extendedglob
     _yaaterm_job=''
+    # Mark the output boundary before filtering builtins and unknown command names.
+    _yaaterm_ai_line=${1[1,384]}
+    _yaaterm_ai_line=${_yaaterm_ai_line//[[:cntrl:]]/␣}
+    (( ${#1} > 384 )) && _yaaterm_ai_line+=…
+    builtin printf '\033]777;yaaterm-begin;%s;\007' "$_yaaterm_exit_token" > "$TTY"
     local line=${2##[[:space:]]#}
     [[ -n $line && $line != *('&'|'&!'|'&|') ]] || return 0
     local -a words=(${(z)line})
@@ -145,6 +150,8 @@ _yaaterm_command_start() {
 _yaaterm_command_end() {
     local code=$?
     emulate -L zsh
+    builtin printf '\033]777;yaaterm-end;%s;%d;%s\007' "$_yaaterm_exit_token" "$code" "$_yaaterm_ai_line" > "$TTY"
+    _yaaterm_ai_line=''
     _yaaterm_prompt_context
     local name=$_yaaterm_job
     _yaaterm_job=''
@@ -165,3 +172,16 @@ preexec_functions+=(_yaaterm_command_start)
 precmd_functions=(_yaaterm_command_end "${precmd_functions[@]}")
 
 _yaaterm_prompt_context
+builtin printf '\033]777;yaaterm-end;%s;0;\007' "$_yaaterm_exit_token" > "$TTY"
+
+# Launch only in the newly created tab, after the login profile and line editor are ready.
+if [[ $_yaaterm_launch_agent == (codex|claude|agy|qodercn|omp) ]]; then
+    autoload -Uz add-zle-hook-widget
+    _yaaterm_launch_once() {
+        add-zle-hook-widget -d line-init _yaaterm_launch_once
+        BUFFER=$_yaaterm_launch_agent
+        unset _yaaterm_launch_agent
+        zle .accept-line
+    }
+    add-zle-hook-widget line-init _yaaterm_launch_once
+fi
