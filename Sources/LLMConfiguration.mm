@@ -7,6 +7,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+NSString *const LLMStreamingUnsupported=@"此服务不支持流式回复。";
+
 static NSString *trim(NSString *s) {
     return [s stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
 }
@@ -168,7 +170,7 @@ static NSString *assistantText(NSDictionary *json, LLMAPIFormat format) {
     NSMutableString *_streamText;
     NSMutableData *_eventData;
     NSString *_streamError;
-    BOOL _skipLF, _finished;
+    BOOL _skipLF, _finished, _publishScheduled;
     NSUInteger _publishedLength;
     NSTimeInterval _lastPublish;
 }
@@ -245,16 +247,30 @@ static NSString *assistantText(NSDictionary *json, LLMAPIFormat format) {
         newRequest:(NSURLRequest *)request completionHandler:(void (^)(NSURLRequest *))reply {
     reply(nil);
 }
+- (void)publishProgress {
+    if (_finished || _streamError || _tooLarge || _streamText.length==_publishedLength) return;
+    _lastPublish=NSProcessInfo.processInfo.systemUptime;
+    _publishedLength=_streamText.length;
+    NSString *snapshot=[_streamText copy];
+    dispatch_async(dispatch_get_main_queue(), ^{ self.progress(snapshot); });
+}
 - (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveData:(NSData *)data {
     if (self.tooLarge || _streamError || _finished) return;
     if (_streamText) {
         [self readStream:data];
         if (_tooLarge || _streamError) { [task cancel]; return; }
-        NSTimeInterval now=NSProcessInfo.processInfo.systemUptime;
-        if (_streamText.length!=_publishedLength && now-_lastPublish>=0.08) {
-            _lastPublish=now; _publishedLength=_streamText.length;
-            NSString *snapshot=[_streamText copy];
-            dispatch_async(dispatch_get_main_queue(), ^{ self.progress(snapshot); });
+        // Some gateways leave the HTTP response open after the protocol's end marker.
+        if (_finished) { [task cancel]; return; }
+        if (_streamText.length==_publishedLength || _publishScheduled) return;
+        NSTimeInterval delay=0.08-(NSProcessInfo.processInfo.systemUptime-_lastPublish);
+        if (delay<=0) [self publishProgress];
+        else {
+            // Flush the last chunk of a burst even if the model pauses before its next token.
+            _publishScheduled=YES;
+            NSOperationQueue *queue=session.delegateQueue;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(delay*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+                [queue addOperationWithBlock:^{ self->_publishScheduled=NO; [self publishProgress]; }];
+            });
         }
         return;
     }
@@ -265,7 +281,8 @@ static NSString *assistantText(NSDictionary *json, LLMAPIFormat format) {
     NSString *message = _streamError;
     if (self.tooLarge) message = @"响应过大，请检查 API 地址。";
     else if (error.code == NSURLErrorTimedOut) message = @"连接超时，请检查服务地址或网络。";
-    else if (error && !message) message = @"未能连接服务，请检查网络、地址和 TLS 证书。";
+    else if (error && !message && !(_finished && error.code==NSURLErrorCancelled))
+        message = @"未能连接服务，请检查网络、地址和 TLS 证书。";
     NSString *text = nil;
     if (!message && _streamText) {
         if (!_finished) message=@"流式连接中断，请重试。";
@@ -273,6 +290,14 @@ static NSString *assistantText(NSDictionary *json, LLMAPIFormat format) {
     } else if (!message) {
         id json = [NSJSONSerialization JSONObjectWithData:self.bytes options:0 error:nil];
         message = responseError((NSHTTPURLResponse *)task.response,json,self.format);
+        NSInteger status=[(NSHTTPURLResponse *)task.response statusCode];
+        if (_progress && (status==400 || status==406 || status==422) && [json isKindOfClass:NSDictionary.class]) {
+            id detail=json[@"error"];
+            NSString *description=[detail isKindOfClass:NSDictionary.class] ? detail[@"message"] : detail;
+            if (([detail isKindOfClass:NSDictionary.class] && [detail[@"param"] isEqual:@"stream"]) ||
+                ([description isKindOfClass:NSString.class] && [description localizedCaseInsensitiveContainsString:@"stream"]))
+                message=LLMStreamingUnsupported;
+        }
         if (!message && self.wantsText) {
             BOOL incomplete = (self.format==LLMResponses && [json[@"status"] isEqual:@"incomplete"]) ||
                 (self.format==LLMChatCompletions && [[[json[@"choices"] firstObject] objectForKey:@"finish_reason"] isEqual:@"length"]) ||
@@ -284,8 +309,9 @@ static NSString *assistantText(NSDictionary *json, LLMAPIFormat format) {
             }
         }
     }
+    _finished=YES;
     dispatch_async(dispatch_get_main_queue(), ^{ self.completion(text,message); });
-    [session finishTasksAndInvalidate];
+    if (!self.wantsText) [session finishTasksAndInvalidate];
 }
 @end
 
@@ -367,6 +393,26 @@ static NSString *assistantText(NSDictionary *json, LLMAPIFormat format) {
     config.URLCache = nil; config.HTTPCookieStorage = nil; config.URLCredentialStorage = nil;
     return config;
 }
+- (NSURLSessionDataTask *)startAnswerRequest:(NSURLRequest *)request exchange:(LLMExchange *)exchange {
+    // Keep a short connection-reuse window without a permanent session or a polling timer.
+    static NSURLSession *session;
+    @synchronized (LLMConfiguration.class) {
+        if (!session) {
+            NSURLSessionConfiguration *config=[self testSessionConfiguration];
+            config.timeoutIntervalForRequest=90; config.timeoutIntervalForResource=120;
+            session=[NSURLSession sessionWithConfiguration:config];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,60*NSEC_PER_SEC),dispatch_get_main_queue(),^{
+                @synchronized (LLMConfiguration.class) {
+                    [session finishTasksAndInvalidate]; session=nil;
+                }
+            });
+        }
+        NSURLSessionDataTask *task=[session dataTaskWithRequest:request];
+        task.delegate=exchange;
+        [task resume];
+        return task;
+    }
+}
 - (NSURLSessionDataTask *)testConnection:(void (^)(NSString *))completion {
     return [self performRequest:self.connectionTestRequest wantsText:NO progress:nil completion:^(NSString *, NSString *error){ completion(error); }];
 }
@@ -380,9 +426,8 @@ static NSString *assistantText(NSDictionary *json, LLMAPIFormat format) {
     }
     LLMExchange *probe = [LLMExchange new];
     probe.progress=progress; probe.wantsText = wantsText; probe.format = _format; probe.bytes = [NSMutableData data]; probe.completion = completion;
-    NSURLSessionConfiguration *config = [self testSessionConfiguration];
-    if (wantsText) { config.timeoutIntervalForRequest = 90; config.timeoutIntervalForResource = 120; }
-    NSURLSession *session = [NSURLSession sessionWithConfiguration:config delegate:probe delegateQueue:nil];
+    if (wantsText) return [self startAnswerRequest:request exchange:probe];
+    NSURLSession *session=[NSURLSession sessionWithConfiguration:[self testSessionConfiguration] delegate:probe delegateQueue:nil];
     NSURLSessionDataTask *task = [session dataTaskWithRequest:request];
     [task resume]; return task;
 }

@@ -30,6 +30,7 @@
 @end
 static dispatch_block_t firstAgentReply;
 static void (^diagnosisReply)(NSString *,NSString *);
+static void (^diagnosisProgress)(NSString *);
 static BOOL missingProfile;
 @implementation PromptFixture
 + (void)loadFixture:(void (^)(LLMConfiguration *,NSString *))completion {
@@ -39,7 +40,8 @@ static BOOL missingProfile;
     NSDictionary *task=[NSJSONSerialization JSONObjectWithData:[input dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
     if ([task[@"mode"] isEqual:@"diagnose"]) {
         assert(task[@"failure"][@"command"] && task[@"failure"][@"output"] && task[@"failure"][@"status"]);
-        diagnosisReply=[reply copy]; return nil;
+        assert(progress && ![instruction containsString:@"agent mode"]);
+        diagnosisProgress=[progress copy]; diagnosisReply=[reply copy]; return nil;
     }
     NSArray *steps=task[@"steps"]; NSString *json=nil;
     if ([task[@"goal"] isEqual:@"stream-check"]) {
@@ -329,7 +331,7 @@ static void testTerminalOutput(NSString *directory) {
     auto respond=^(NSString *reason,NSString *line) {
         NSMutableDictionary *result=[@{@"text":reason} mutableCopy]; if (line) result[@"command"]=line;
         NSString *json=[[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:result options:0 error:nil] encoding:NSUTF8StringEncoding];
-        diagnosisReply(json,nil); diagnosisReply=nil;
+        diagnosisReply(json,nil); diagnosisReply=nil; diagnosisProgress=nil;
     };
     auto rowOnGrid=[&](NSString *needle) {
         NSInteger rows=(NSHeight(pane.bounds)-24)/[[pane valueForKey:@"lh"] doubleValue];
@@ -365,12 +367,14 @@ static void testTerminalOutput(NSString *directory) {
     assert(!pane.assistantVisible && !session.agentInputID && pane.subviews.count==views && window.firstResponder==pane);
     assert([fixButton().title isEqual:@"分析中"]);
     NSString *suggestion=@"print -r verified > \"$ZDOTDIR/confirmed.txt\"";
+    // The final response can arrive before ZLE acknowledges the preview.
+    diagnosisProgress(@"{\"text\":\"命令不存在，请检查拼写。\",\"command\":\"pri");
     respond(@"命令不存在，请检查拼写。",suggestion);
     until(^BOOL{ return [fixButton().title isEqual:@"复制建议"] && textOnGrid(@"verified >"); });
     assert(textOnGrid(@"命令不存在") && textOnGrid(@"yaaterm_no_such_executable") && pane.subviews.count==views);
     assert(ioctl(fixFD,TIOCGWINSZ,&duringFix)==0 && beforeFix.ws_row==duringFix.ws_row && beforeFix.ws_col==duringFix.ws_col);
     assert(![NSFileManager.defaultManager fileExistsAtPath:proof]);
-    assert(textOnGrid(@"回车执行"));
+    assert(!textOnGrid(@"回车执行"));
     send(@"\r");
     until(^BOOL{ return !pane.hasFailedCommand && [NSFileManager.defaultManager fileExistsAtPath:proof]; });
     assert([[NSString stringWithContentsOfFile:proof encoding:NSUTF8StringEncoding error:nil] isEqual:@"verified\n"]);
@@ -378,6 +382,8 @@ static void testTerminalOutput(NSString *directory) {
     send(@"false\r"); until(^BOOL{ return pane.hasFailedCommand; });
     checkErrorPosition(@"❯ false",nil); explain();
     send(@"print -r DRAFT-KEPT\001"); // Ctrl+A leaves the insertion point at the start.
+    diagnosisProgress(@"{\"text\":\"Literal $(touch INJECTED) \\u001b]2;injected\\u0007\",");
+    until(^BOOL{ return textOnGrid(@"Literal $(touch INJECTED)"); });
     respond(@"Literal $(touch INJECTED) \033]2;injected\007",@"touch INJECTED");
     until(^BOOL{ return [fixButton().title isEqual:@"复制建议"] && textOnGrid(@"建议命令  touch INJECTED"); });
     assert(![pane.sessionTitle isEqual:@"injected"] && textOnGrid(@"print -r DRAFT-KEPT"));
@@ -409,18 +415,30 @@ static void testTerminalOutput(NSString *directory) {
     until(^BOOL{ return [fixButton().title isEqual:@"重试分析"] && textOnGrid(@"模型服务连接超时。"); });
     explain(); respond(@"命令名写反了，应为 git。\n参数可以保留。",@"git status");
     until(^BOOL{ return [fixButton().title isEqual:@"复制建议"] && textOnGrid(@"❯ git status"); });
-    assert(textOnGrid(@"命令名写反了") && textOnGrid(@"回车执行") && textOnGrid(@"worktree") && textOnGrid(@"main"));
-    assert(rowOnGrid(@"参数可以保留。")==rowOnGrid(@"命令名写反了")+1 && rowOnGrid(@"回车执行")==rowOnGrid(@"参数可以保留。")+2);
+    assert(textOnGrid(@"命令名写反了") && !textOnGrid(@"回车执行") && textOnGrid(@"worktree") && textOnGrid(@"main"));
+    assert(rowOnGrid(@"参数可以保留。")==rowOnGrid(@"命令名写反了")+1 && rowOnGrid(@"❯ git status")==rowOnGrid(@"参数可以保留。")+3);
     paint(pane,@"diagnosis-narrow.png");
     send(@"\003"); [pane setFrameSize:fullSize];
     send(@"PROMPT='%F{4}~/project%f ❯ '; RPROMPT=''; clear\rgti status --short\r");
     until(^BOOL{ return [[[pane valueForKey:@"failure"] objectForKey:@"command"] isEqual:@"gti status --short"]; });
     checkErrorPosition(@"zsh: command not found: gti",@"button-at-error.png");
-    explain(); respond(@"\n  找不到 gti，你可能想输入 git。  \n",@"git status --short");
+    NSTimeInterval start=NSProcessInfo.processInfo.systemUptime;
+    explain();
+    diagnosisProgress(@"{\"text\":\"找不到 gti");
+    assert(!textOnGrid(@"找不到 gti"));
+    diagnosisProgress(@"{\"text\":\"找不到 gti，你可能想输入 git。\",\"command\":\"git st");
+    until(^BOOL{ return textOnGrid(@"找不到 gti"); });
+    NSTimeInterval firstVisible=NSProcessInfo.processInfo.systemUptime-start;
+    assert([fixButton().title isEqual:@"分析中"] && !textOnGrid(@"❯ git status --short"));
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,350*NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+        respond(@"\n  找不到 gti，你可能想输入 git。  \n",@"git status --short");
+    });
     until(^BOOL{ return [fixButton().title isEqual:@"复制建议"] && textOnGrid(@"❯ git status --short"); });
     int cause=rowOnGrid(@"找不到 gti");
     assert(cause==rowOnGrid(@"zsh: command not found: gti")+1);
-    assert(rowOnGrid(@"回车执行")==cause+2 && rowOnGrid(@"❯ git status --short")==cause+3);
+    assert(!textOnGrid(@"回车执行") && rowOnGrid(@"❯ git status --short")==cause+2);
+    printf("Diagnosis, real zsh, provider fixture with a 350 ms command delay: reason %.1f ms, editable command %.1f ms\n",
+           firstVisible*1000,(NSProcessInfo.processInfo.systemUptime-start)*1000);
     NSInteger mode=[TerminalPreferences() integerForKey:AppearanceModeKey];
     SetTerminalPreference(AppearanceModeKey,AlwaysLight); paint(pane,@"diagnosis-light.png");
     SetTerminalPreference(AppearanceModeKey,AlwaysDark); paint(pane,@"diagnosis-dark.png");

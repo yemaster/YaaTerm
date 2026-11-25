@@ -57,6 +57,9 @@ static void waitFor(BOOL (^done)(void)) {
 static NSInteger httpCode;
 static NSData *replyData;
 static NSArray<NSData *> *streamChunks;
+static dispatch_block_t streamTail, streamMiddle;
+static NSData *middleChunk;
+static BOOL keepStreamOpen;
 static NSDictionary *(^scriptedReply)(NSDictionary *request);
 @implementation FixtureProtocol
 + (BOOL)canInitWithRequest:(NSURLRequest *)request { return [request.URL.host isEqual:@"fixture.invalid"]; }
@@ -67,12 +70,14 @@ static NSDictionary *(^scriptedReply)(NSDictionary *request);
     [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
     if (streamChunks) {
         NSArray *chunks=streamChunks;
+        // Let the test advance a burst only after its previous update is actually visible.
+        streamMiddle=^{ [self.client URLProtocol:self didLoadData:middleChunk]; };
+        streamTail=^{
+            [self.client URLProtocol:self didLoadData:chunks.lastObject];
+            if (!keepStreamOpen) [self.client URLProtocolDidFinishLoading:self];
+        };
         for (NSData *chunk in [chunks subarrayWithRange:NSMakeRange(0,chunks.count-1)])
             [self.client URLProtocol:self didLoadData:chunk];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,110*NSEC_PER_MSEC),dispatch_get_main_queue(),^{
-            [self.client URLProtocol:self didLoadData:chunks.lastObject];
-            [self.client URLProtocolDidFinishLoading:self];
-        });
         return;
     }
     NSData *data=replyData;
@@ -183,17 +188,21 @@ static void checkStreaming() {
             NSString *tail=[delta(@"完成") stringByAppendingString:complete ? end : @""];
             streamChunks=@[[bytes subdataWithRange:NSMakeRange(0,split)],
                 [bytes subdataWithRange:NSMakeRange(split,bytes.length-split)],[tail dataUsingEncoding:NSUTF8StringEncoding]];
-            __block BOOL sawFirst=NO, done=NO;
+            middleChunk=[delta(@"就绪") dataUsingEncoding:NSUTF8StringEncoding];
+            keepStreamOpen=complete;
+            __block BOOL sawFirst=NO, sawMiddle=NO, done=NO;
             httpCode=200;
             [profile(@"https://fixture.invalid",format) ask:@"input" instruction:@"rules" progress:^(NSString *text) {
-                assert(NSThread.isMainThread && !done); if ([text isEqual:@"已经"]) sawFirst=YES;
+                assert(NSThread.isMainThread && !done);
+                if ([text isEqual:@"已经"]) { sawFirst=YES; streamMiddle(); streamMiddle=nil; }
+                if ([text isEqual:@"已经就绪"]) { sawMiddle=YES; streamTail(); streamTail=nil; }
             } completion:^(NSString *text,NSString *error) {
-                assert(sawFirst && (complete ? [text isEqual:@"已经完成"] && !error : !text && error.length)); done=YES;
+                assert(sawFirst && sawMiddle && (complete ? [text isEqual:@"已经就绪完成"] && !error : !text && error.length)); done=YES;
             }];
             waitFor(^BOOL{ return done; });
         }
     }
-    streamChunks=nil;
+    streamChunks=nil; middleChunk=nil;
 }
 
 static void click(NSControl *control) {
@@ -374,6 +383,21 @@ static void checkAssistant() {
     [diagnosis explain:@{@"command":@"lss",@"status":@127,@"output":@"command not found"}];
     waitFor(^BOOL{ return ![[diagnosis valueForKey:@"busy"] boolValue]; });
     assert([reason isEqual:@"拼写有误"] && !diagnosis.expectedCommand);
+    // An explicitly rejected stream gets one ordinary request on the same provider.
+    __block int attempts=0;
+    reason=nil; httpCode=422;
+    diagnosis.onPreview=^(NSString *){ assert(false); };
+    scriptedReply=^NSDictionary *(NSDictionary *body) {
+        if (++attempts==1) {
+            assert([body[@"stream"] isEqual:@YES]); httpCode=200;
+            return @{@"error":@{@"param":@"stream",@"message":@"unsupported parameter"}};
+        }
+        assert(attempts==2 && !body[@"stream"]);
+        return @{@"choices":@[@{@"message":@{@"content":@"{\"text\":\"单次回复\"}"}}]};
+    };
+    [diagnosis explain:@{@"command":@"lss",@"status":@127,@"output":@"command not found"}];
+    waitFor(^BOOL{ return reason!=nil; });
+    assert([reason isEqual:@"单次回复"] && attempts==2);
     // A stopped request must not publish a late result or continue inspecting files.
     scriptedReply=^NSDictionary *(NSDictionary *) {
         return @{@"choices":@[@{@"message":@{@"content":@"late reply"}}]};

@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 
 typedef NS_ENUM(NSInteger, LLMAPIFormat) { LLMChatCompletions, LLMResponses, LLMAnthropicMessages };
+FOUNDATION_EXPORT NSString *const LLMStreamingUnsupported;
 
 @interface LLMConfiguration : NSObject
 @property (readonly, copy) NSString *endpoint, *apiKey, *model;

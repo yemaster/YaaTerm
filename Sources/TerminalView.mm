@@ -106,7 +106,8 @@ enum FixState { ExplainError, AnalyzingError, SendingExplanation, ShowExplanatio
     Cell _failureGlyph;
     NSDictionary *_failure;
     TerminalAssistant *_diagnosis;
-    NSString *_explanation, *_suggestion;
+    NSString *_explanation, *_suggestion, *_shownReason;
+    BOOL _previewPending;
     FixState _fixState;
     DiagnosisFollowUp _followUp;
     uint64_t _commandSerial;
@@ -623,7 +624,8 @@ struct PaintedLine {
 }
 - (void)clearFailure {
     [_diagnosis cancel]; _diagnosis=nil;
-    if (_fixState==SendingExplanation) [_session discardPendingLine];
+    if (_previewPending || _fixState==SendingExplanation) [_session discardPendingLine];
+    _previewPending=NO; _shownReason=nil;
     _screen->failureCell={-1,0};
     _fixState=ExplainError; _explanation=nil; _suggestion=nil; _failure=nil; [_fixButton removeFromSuperview]; _fixButton=nil;
 }
@@ -918,11 +920,24 @@ struct PaintedLine {
     if (_assistant) { [self closeAssistant]; return; }
     [self openAssistantFor:BuiltInAgent tool:nil];
 }
+- (void)previewExplanation:(NSString *)reason {
+    if (_fixState!=AnalyzingError || _insideCommand || _screen->alternate || !_screen->bracketPaste) return;
+    __weak TerminalView *weak=self;
+    _previewPending=[_session showDiagnosis:reason suggestion:nil sequence:_commandSerial acknowledged:^(BOOL shown) {
+        TerminalView *pane=weak; if (!pane) return;
+        pane->_previewPending=NO;
+        if (shown) pane->_shownReason=reason;
+        if (pane->_explanation) [pane deliverExplanation];
+    }];
+}
 - (void)deliverExplanation {
     __weak TerminalView *weak=self;
     [self setFixState:SendingExplanation];
+    if (_previewPending) return;
+    NSString *remaining=[_explanation isEqual:_shownReason] && _followUp==DiagnosisDone ? nil : _explanation;
+    if (!remaining && !_suggestion.length) { [self clearFailure]; return; }
     BOOL sent=!_insideCommand && !_screen->alternate && _screen->bracketPaste &&
-        [_session showDiagnosis:_explanation suggestion:_suggestion sequence:_commandSerial acknowledged:^(BOOL shown) {
+        [_session showDiagnosis:remaining suggestion:_suggestion sequence:_commandSerial acknowledged:^(BOOL shown) {
             TerminalView *pane=weak;
             if (!pane || pane->_fixState!=SendingExplanation) return;
             if (!shown) { [pane setFixState:ShowExplanationAgain]; return; }
@@ -939,6 +954,7 @@ struct PaintedLine {
     [self.window makeFirstResponder:self];
     switch (_fixState) {
         case AnalyzingError:
+            if (_previewPending) { [_session discardPendingLine]; _previewPending=NO; }
             [_diagnosis cancel]; _diagnosis=nil; [self setFixState:ExplainError]; return;
         case ConfigureDiagnosis:
             [self setFixState:RetryDiagnosis]; if (_configureAI) _configureAI(); return;
@@ -951,8 +967,10 @@ struct PaintedLine {
         default: break;
     }
     [self setFixState:AnalyzingError];
+    _shownReason=nil;
     _diagnosis=[[TerminalAssistant alloc] initWithDirectory:_session.workingDirectory shell:_session.shellName];
     __weak TerminalView *weak=self;
+    _diagnosis.onPreview=^(NSString *reason) { [weak previewExplanation:reason]; };
     _diagnosis.onDiagnosis=^(NSString *text, NSString *command, DiagnosisFollowUp followUp) {
         TerminalView *pane=weak; if (!pane) return;
         NSString *reason=[text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
