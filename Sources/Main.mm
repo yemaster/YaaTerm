@@ -156,7 +156,12 @@ static void positionAtDrop(TabWorkspace *workspace, NSRect preview) {
 - (void)toggleAssistant:(id)sender { [self.current.focused toggleAssistant:sender]; }
 - (void)explainFailure:(id)sender { [self.current.focused explainFailure:sender]; }
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
-    if (item.action==@selector(explainFailure:)) return self.current.focused.hasFailedCommand;
+    if (item.action==@selector(explainFailure:)) {
+        NSString *action=self.current.focused.failureActionTitle;
+        NSString *title=action ?: @"解释上一条错误";
+        if (![item.title isEqual:title]) item.title=title;
+        return action!=nil;
+    }
     if (item.action==@selector(toggleAssistant:)) return self.current.focused && [TerminalPreferences() boolForKey:BuiltInAgent];
     if (item.action==@selector(launchLocalAgent:)) return self.current.focused && [TerminalPreferences() boolForKey:LocalAgentLauncher];
     return YES;

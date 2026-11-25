@@ -14,6 +14,7 @@
 - (void)previewAgentText:(NSString *)text;
 - (BOOL)approveAgentLine:(NSString *)identifier;
 - (NSString *)submitLine:(NSString *)line execute:(BOOL)execute acknowledged:(void (^)(BOOL))reply;
+- (BOOL)showDiagnosis:(NSString *)text suggestion:(NSString *)command sequence:(uint64_t)sequence acknowledged:(void (^)(BOOL))reply;
 - (void)acknowledgeLine:(NSString *)identifier accepted:(BOOL)accepted;
 - (void)discardPendingLine;
 @property (readonly) NSString *shellName, *commandExitToken;

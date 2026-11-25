@@ -23,6 +23,7 @@
 @property (readonly) BOOL assistantVisible;
 @property (readonly) BOOL builtInAgentVisible;
 @property (readonly) BOOL hasFailedCommand;
+@property (readonly) NSString *failureActionTitle;
 - (void)toggleAssistant:(id)sender;
 - (void)explainFailure:(id)sender;
 - (void)showFind:(id)sender;

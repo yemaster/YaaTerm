@@ -29,10 +29,18 @@
 + (void)loadFixture:(void (^)(LLMConfiguration *,NSString *))completion;
 @end
 static dispatch_block_t firstAgentReply;
+static void (^diagnosisReply)(NSString *,NSString *);
+static BOOL missingProfile;
 @implementation PromptFixture
-+ (void)loadFixture:(void (^)(LLMConfiguration *,NSString *))completion { completion([PromptFixture new],nil); }
++ (void)loadFixture:(void (^)(LLMConfiguration *,NSString *))completion {
+    if (missingProfile) completion(nil,@"请配置 AI 服务。"); else completion([PromptFixture new],nil);
+}
 - (NSURLSessionDataTask *)ask:(NSString *)input instruction:(NSString *)instruction progress:(void (^)(NSString *))progress completion:(void (^)(NSString *,NSString *))reply {
     NSDictionary *task=[NSJSONSerialization JSONObjectWithData:[input dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+    if ([task[@"mode"] isEqual:@"diagnose"]) {
+        assert(task[@"failure"][@"command"] && task[@"failure"][@"output"] && task[@"failure"][@"status"]);
+        diagnosisReply=[reply copy]; return nil;
+    }
     NSArray *steps=task[@"steps"]; NSString *json=nil;
     if ([task[@"goal"] isEqual:@"stream-check"]) {
         progress(@"First streaming line\n; print BAD-EXEC");
@@ -310,16 +318,86 @@ static void testTerminalOutput(NSString *directory) {
     assert([failure[@"output"] containsString:@"yaaterm-no-such-directory"] && ![failure[@"output"] containsString:@"example.org"]);
     send(@"yaaterm_no_such_executable\r");
     until(^BOOL{ return [[[pane valueForKey:@"failure"] objectForKey:@"status"] intValue]==127; });
-    // The diagnostic correction remains an editable shell line until the user presses Return.
+    Method load=class_getClassMethod(LLMConfiguration.class,@selector(loadSaved:));
+    IMP original=method_setImplementation(load,method_getImplementation(class_getClassMethod(PromptFixture.class,@selector(loadFixture:))));
     NSString *proof=[directory stringByAppendingPathComponent:@"confirmed.txt"];
+    auto explain=[&] {
+        [pane explainFailure:nil]; until(^BOOL{ return diagnosisReply!=nil; });
+    };
+    auto respond=^(NSString *reason,NSString *line) {
+        NSMutableDictionary *result=[@{@"text":reason} mutableCopy]; if (line) result[@"command"]=line;
+        NSString *json=[[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:result options:0 error:nil] encoding:NSUTF8StringEncoding];
+        diagnosisReply(json,nil); diagnosisReply=nil;
+    };
+    auto textOnGrid=[&](NSString *needle) {
+        NSInteger rows=(NSHeight(pane.bounds)-24)/[[pane valueForKey:@"lh"] doubleValue];
+        for (int y=0; y<rows; ++y) {
+            const auto &row=[pane displayRow:y];
+            NSMutableString *line=[NSMutableString string];
+            for (const auto &cell:row) if (cell.ch && cell.ch<=0xffff) [line appendFormat:@"%C",(unichar)cell.ch];
+            if ([line containsString:needle]) return true;
+        }
+        return false;
+    };
+    auto fixButton=^NSButton *{ return [pane valueForKey:@"fixButton"]; };
+    winsize beforeFix{}, duringFix{}; int fixFD=[[session valueForKey:@"fd"] intValue];
+    assert(ioctl(fixFD,TIOCGWINSZ,&beforeFix)==0);
+    NSUInteger views=pane.subviews.count;
+    explain();
+    assert(!pane.assistantVisible && !session.agentInputID && pane.subviews.count==views && window.firstResponder==pane);
+    assert([fixButton().title isEqual:@"分析中"]);
     NSString *suggestion=@"print -r verified > \"$ZDOTDIR/confirmed.txt\"";
-    __block BOOL inserted=NO;
-    until(^BOOL{ if (!inserted) inserted=[session submitLine:suggestion execute:NO acknowledged:nil]!=nil; return inserted; });
-    until(^BOOL{ return ![session valueForKey:@"pendingID"]; });
+    respond(@"命令不存在，请检查拼写。",suggestion);
+    until(^BOOL{ return [fixButton().title isEqual:@"复制建议"] && textOnGrid(@"verified >"); });
+    assert(textOnGrid(@"命令不存在") && textOnGrid(@"yaaterm_no_such_executable") && pane.subviews.count==views);
+    assert(ioctl(fixFD,TIOCGWINSZ,&duringFix)==0 && beforeFix.ws_row==duringFix.ws_row && beforeFix.ws_col==duringFix.ws_col);
     assert(![NSFileManager.defaultManager fileExistsAtPath:proof]);
+    assert(textOnGrid(@"回车执行"));
     send(@"\r");
     until(^BOOL{ return !pane.hasFailedCommand && [NSFileManager.defaultManager fileExistsAtPath:proof]; });
     assert([[NSString stringWithContentsOfFile:proof encoding:NSUTF8StringEncoding error:nil] isEqual:@"verified\n"]);
+    // A late suggestion must preserve the text and cursor of a partially typed shell command.
+    send(@"false\r"); until(^BOOL{ return pane.hasFailedCommand; }); explain();
+    send(@"print -r DRAFT-KEPT\001"); // Ctrl+A leaves the insertion point at the start.
+    respond(@"Literal $(touch INJECTED) \033]2;injected\007",@"touch INJECTED");
+    until(^BOOL{ return [fixButton().title isEqual:@"复制建议"] && textOnGrid(@"建议命令  touch INJECTED"); });
+    assert(![pane.sessionTitle isEqual:@"injected"] && textOnGrid(@"print -r DRAFT-KEPT"));
+    send(@"builtin \r"); until(^BOOL{ return !pane.hasFailedCommand && textOnGrid(@"builtin print -r DRAFT-KEPT"); });
+    assert(![NSFileManager.defaultManager fileExistsAtPath:[directory stringByAppendingPathComponent:@"INJECTED"]]);
+    // A new command invalidates the outstanding explanation, even if its request completes afterwards.
+    send(@"false\r"); until(^BOOL{ return pane.hasFailedCommand; }); explain(); send(@"true\r");
+    until(^BOOL{ return !pane.hasFailedCommand; }); respond(@"STALE-DIAGNOSIS",nil);
+    assert(![pane valueForKey:@"diagnosis"] && !textOnGrid(@"STALE-DIAGNOSIS") && !fixButton());
+    // Missing configuration and provider errors use the same prompt and action, including in a split.
+    NSSize fullSize=pane.frame.size;
+    [pane setFrameSize:NSMakeSize(362,230)]; send(@"PROMPT=$'worktree\\n❯ '; RPROMPT='main'; clear\rgti status\r");
+    until(^BOOL{ return [[[pane valueForKey:@"failure"] objectForKey:@"command"] isEqual:@"gti status"]; });
+    [pane removeFromSuperview]; assert(!fixButton() && pane.hasFailedCommand);
+    [window.contentView addSubview:pane]; assert(fixButton());
+    missingProfile=YES; [pane explainFailure:nil];
+    until(^BOOL{ return [fixButton().title isEqual:@"配置 AI 服务"] && textOnGrid(@"请配置 AI 服务。"); });
+    __block BOOL configured=NO; pane.configureAI=^{ configured=YES; };
+    [pane explainFailure:nil]; assert(configured); missingProfile=NO; pane.configureAI=nil;
+    explain(); diagnosisReply(nil,@"模型服务连接超时。"); diagnosisReply=nil;
+    until(^BOOL{ return [fixButton().title isEqual:@"重试分析"] && textOnGrid(@"模型服务连接超时。"); });
+    explain(); respond(@"命令名写反了，应为 git。",@"git status");
+    until(^BOOL{ return [fixButton().title isEqual:@"复制建议"] && textOnGrid(@"❯ git status"); });
+    assert(textOnGrid(@"命令名写反了") && textOnGrid(@"回车执行") && textOnGrid(@"worktree") && textOnGrid(@"main"));
+    paint(pane,@"diagnosis-narrow.png");
+    send(@"\003"); [pane setFrameSize:fullSize];
+    send(@"PROMPT='%F{4}~/project%f ❯ '; RPROMPT=''; clear\rgti status --short\r");
+    until(^BOOL{ return [[[pane valueForKey:@"failure"] objectForKey:@"command"] isEqual:@"gti status --short"]; });
+    explain(); respond(@"找不到 gti，你可能想输入 git。",@"git status --short");
+    until(^BOOL{ return [fixButton().title isEqual:@"复制建议"] && textOnGrid(@"❯ git status --short"); });
+    NSInteger mode=[TerminalPreferences() integerForKey:AppearanceModeKey];
+    SetTerminalPreference(AppearanceModeKey,AlwaysLight); paint(pane,@"diagnosis-light.png");
+    SetTerminalPreference(AppearanceModeKey,AlwaysDark); paint(pane,@"diagnosis-dark.png");
+    SetTerminalPreference(AppearanceModeKey,mode); send(@"\r");
+    until(^BOOL{ return !pane.hasFailedCommand; });
+    send(@"false\r"); until(^BOOL{ return pane.hasFailedCommand; }); explain();
+    SetTerminalPreference(AIErrorExplanations,NO); respond(@"DISABLED-DIAGNOSIS",nil);
+    assert(![pane valueForKey:@"diagnosis"] && !fixButton() && !textOnGrid(@"DISABLED-DIAGNOSIS") && !session.tracksCommands);
+    SetTerminalPreference(AIErrorExplanations,YES);
     assert([NSFileManager.defaultManager createDirectoryAtPath:[directory stringByAppendingPathComponent:@"build %n"]
         withIntermediateDirectories:NO attributes:nil error:nil]);
     send(@"HOME=$ZDOTDIR; repeat 48 print -r -- earlier-output; print -r -- VISIBLE-BEFORE-AGENT; setopt promptsubst; marker='LEFT>'; PROMPT=$'THEME-TOP\\n%F{2}${marker}%f '; RPROMPT='%F{4}THEME-RIGHT%f'; printf '\\033]2;before-agent\\007'\r");
@@ -347,13 +425,11 @@ static void testTerminalOutput(NSString *directory) {
     assert(ioctl(terminalFD,TIOCGWINSZ,&originalSize)==0);
     until(^BOOL{ if (!pane.assistantVisible) [pane toggleAssistant:nil]; return pane.assistantVisible; });
     until(^BOOL{ return ![session valueForKey:@"agentReady"]; });
-    assert(session.agentInputID && ![pane valueForKeyPath:@"assistant.diagnosisView"]);
+    assert(session.agentInputID && ![pane valueForKey:@"diagnosis"]);
     assert([window firstResponder]==pane && pane.subviews.count==subviews);
     assert(ioctl(terminalFD,TIOCGWINSZ,&editingSize)==0 &&
            originalSize.ws_row==editingSize.ws_row && originalSize.ws_col==editingSize.ws_col);
     assert([[pane valueForKey:@"offset"] integerValue]==offset && before==snapshot());
-    Method load=class_getClassMethod(LLMConfiguration.class,@selector(loadSaved:));
-    IMP original=method_setImplementation(load,method_getImplementation(class_getClassMethod(PromptFixture.class,@selector(loadFixture:))));
     auto colored=[&](const char *needle,int index) {
         int rows=(NSHeight(pane.bounds)-24)/[[pane valueForKey:@"lh"] doubleValue];
         for (int y=rows-1;y>=0;--y) {

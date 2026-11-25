@@ -263,11 +263,25 @@ static NSString *transcriptText(NSString *text) {
     [self discardPendingLine]; if (reply) reply(accepted);
 }
 - (NSString *)submitLine:(NSString *)line execute:(BOOL)execute acknowledged:(void (^)(BOOL))reply {
-    if (!_directoryCreated || _pendingID || ![self shellIsForeground] || !line.length || line.length>16384 ||
+    if (!line.length || line.length>16384 ||
         [line rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location!=NSNotFound ||
         [line rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location!=NSNotFound) return nil;
+    return [self sendEditorOperation:execute ? (_agentInputID ? @"review" : @"run") : @"fill" payload:line acknowledged:reply];
+}
+- (BOOL)showDiagnosis:(NSString *)text suggestion:(NSString *)command sequence:(uint64_t)sequence acknowledged:(void (^)(BOOL))reply {
+    if (!sequence || _agentInputID) return NO;
+    NSString *body=transcriptText(text ?: @"");
+    // The suggested line stays editable. Only plain, single-line commands may enter ZLE's buffer.
+    if (command && (![command isEqual:transcriptText(command)] || command.length>384 ||
+        [command rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location!=NSNotFound ||
+        [command rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location!=NSNotFound)) command=nil;
+    NSString *payload=[NSString stringWithFormat:@"%@\n%llu\n%@",command ?: @"",sequence,body];
+    return [self sendEditorOperation:@"diagnose" payload:payload acknowledged:reply]!=nil;
+}
+- (NSString *)sendEditorOperation:(NSString *)operation payload:(NSString *)payload acknowledged:(void (^)(BOOL))reply {
+    if (!_directoryCreated || _pendingID || ![self shellIsForeground]) return nil;
     NSString *identifier=NSUUID.UUID.UUIDString;
-    NSString *packet=[NSString stringWithFormat:@"%@\n%@\n%@\n",identifier,execute ? (_agentInputID ? @"review" : @"run") : @"fill",line];
+    NSString *packet=[NSString stringWithFormat:@"%@\n%@\n%@\n",identifier,operation,payload];
     NSString *path=[_controlDirectory stringByAppendingPathComponent:@"line"];
     if (![[packet dataUsingEncoding:NSUTF8StringEncoding] writeToFile:path options:NSDataWritingWithoutOverwriting error:nil]) return nil;
     _pendingID=identifier; _acknowledgement=[reply copy];

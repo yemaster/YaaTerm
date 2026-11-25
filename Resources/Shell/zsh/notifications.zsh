@@ -21,7 +21,8 @@ _yaaterm_command_start() {
         _yaaterm_ai_line=${1[1,384]}
         _yaaterm_ai_line=${_yaaterm_ai_line//[[:cntrl:]]/␣}
         (( ${#1} > 384 )) && _yaaterm_ai_line+=…
-        builtin printf '\033]777;yaaterm-begin;%s;%s\007' "$_yaaterm_exit_token" "$_yaaterm_next_id" > "$TTY"
+        (( ++_yaaterm_command_serial ))
+        builtin printf '\033]777;yaaterm-begin;%s;%s\007' "$_yaaterm_exit_token" "${_yaaterm_next_id:-$_yaaterm_command_serial}" > "$TTY"
     fi
     if [[ -n $_yaaterm_next_id ]]; then
         _yaaterm_next_id=''
@@ -220,8 +221,22 @@ _yaaterm_input_widget() {
         return 0
     fi
     [[ -f $_yaaterm_ai_dir/line ]] || return 0
-    { IFS= builtin read -r id && IFS= builtin read -r op && IFS= builtin read -r line } < "$_yaaterm_ai_dir/line" || return 0
+    local sequence reason
+    {
+        IFS= builtin read -r id && IFS= builtin read -r op && IFS= builtin read -r line || return 0
+        if [[ $op == diagnose ]]; then
+            IFS= builtin read -r sequence || return 0
+            IFS= builtin read -r -d '' reason || :
+        fi
+    } < "$_yaaterm_ai_dir/line" || return 0
     zmodload -F zsh/files b:zf_rm && zf_rm -- "$_yaaterm_ai_dir/line" 2>/dev/null || return 0
+    if [[ $op == diagnose ]]; then
+        if [[ -z ${_yaaterm_editing-} && $CONTEXT == start && $sequence == "$_yaaterm_command_serial" ]]; then
+            builtin source "$_yaaterm_agents_dir/../zsh/diagnosis.zsh" "$line" "$reason" && ok=1
+        fi
+        builtin printf '\033]777;yaaterm-input;%s;%s;%d\007' "$_yaaterm_exit_token" "$id" "$ok" > "$TTY"
+        return 0
+    fi
     local review=0
     [[ $op == review && -n ${_yaaterm_editing-} && -n ${_yaaterm_task_active-} && -z ${_yaaterm_review_id-} ]] && review=1
     if [[ -n $line && $line != *[[:cntrl:]]* ]] &&

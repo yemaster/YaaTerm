@@ -172,6 +172,14 @@ read -r reply
         run(@"command yaa-inspect read 'shortcut'",1);
         run(@"command yaa-agent codex 'check my '\\''task'\\'''",0);
         assert(visible("$ pwd") && visible("fixture result"));
+        // A packet queued just before the user runs another command belongs to the old prompt.
+        lastStatus=-1; send(@"false\r"); waitFor(^bool{ return *statusPtr==1 && grid->bracketPaste; });
+        uint64_t stale=std::stoull(lastID);
+        lastStatus=-1; send(@"true\r"); waitFor(^bool{ return *statusPtr==0 && grid->bracketPaste; });
+        __block int shown=-1;
+        assert([session showDiagnosis:@"STALE-PACKET" suggestion:@"echo WRONG-PROMPT" sequence:stale acknowledged:^(BOOL ok){ shown=ok; }]);
+        waitFor(^bool{ return shown>=0; });
+        assert(!shown && !contains(@"STALE-PACKET") && !contains(@"WRONG-PROMPT"));
         session.tracksCommands=NO;
         assert(![session submitLine:@"pwd" execute:YES acknowledged:nil]);
         send(@"exit\r"); waitFor(^bool{ return (bool)exited; });

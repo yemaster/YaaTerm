@@ -327,8 +327,7 @@ static void checkAssistant() {
     __block BOOL completed=NO; __block int proposals=0;
     panel.onComplete=^(NSString *summary, BOOL failed){ assert(!failed && [summary isEqual:@"已核对"]); completed=YES; };
     __weak TerminalAssistant *owner=panel;
-    panel.onShellLine=^BOOL(NSString *cmd, BOOL execute){
-        assert(execute);
+    panel.onShellLine=^BOOL(NSString *cmd){
         NSDictionary *outputs=@{@"command yaa-inspect list '.'":@"sample.txt",
             @"command yaa-inspect read 'shortcut'":@"无法打开该路径。",@"command yaa-inspect read 'sample.txt'":@"alpha"};
         NSString *output=outputs[cmd];
@@ -359,7 +358,7 @@ static void checkAssistant() {
     panel.onTranscript=^(NSString *line){ transcript=line; };
     [panel submitTask:@"核对文件"];
     waitFor(^BOOL{ return proposals==1; });
-    assert(!completed && !panel.diagnosisView && [panel.expectedCommand isEqual:@"wc -l sample.txt"]);
+    assert(!completed && [panel.expectedCommand isEqual:@"wc -l sample.txt"]);
     [panel receivedResult:@{@"command":panel.expectedCommand,@"status":@0,@"output":@"1 sample.txt"}];
     waitFor(^BOOL{ return completed; }); assert(!panel.expectedCommand);
     scriptedReply=^NSDictionary *(NSDictionary *body) {
@@ -368,10 +367,13 @@ static void checkAssistant() {
         return @{@"choices":@[@{@"message":@{@"content":@"{\"text\":\"拼写有误\",\"command\":\"ls\\nwhoami\"}"}}]};
     };
     TerminalAssistant *diagnosis=[[TerminalAssistant alloc] initWithDirectory:dir shell:@"zsh"];
-    [diagnosis prepareForLocalTool:nil diagnosis:YES];
+    __block NSString *reason=nil;
+    diagnosis.onDiagnosis=^(NSString *text,NSString *command,DiagnosisFollowUp followUp) {
+        assert(!command && followUp==DiagnosisDone); reason=text;
+    };
     [diagnosis explain:@{@"command":@"lss",@"status":@127,@"output":@"command not found"}];
     waitFor(^BOOL{ return ![[diagnosis valueForKey:@"busy"] boolValue]; });
-    assert([[diagnosis.diagnosisView valueForKey:@"action"] isHidden] && !diagnosis.expectedCommand);
+    assert([reason isEqual:@"拼写有误"] && !diagnosis.expectedCommand);
     // A stopped request must not publish a late result or continue inspecting files.
     scriptedReply=^NSDictionary *(NSDictionary *) {
         return @{@"choices":@[@{@"message":@{@"content":@"late reply"}}]};
