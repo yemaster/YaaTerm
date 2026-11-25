@@ -13,9 +13,12 @@ if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}", version) or not re.fullmatch(r"[
 if not Path(f"Resources/ReleaseNotes/{version}.txt").read_text().strip():
     raise SystemExit("This version needs release notes")
 
-publish = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+ref = os.environ.get("GITHUB_REF", "")
+publish = os.environ.get("GITHUB_EVENT_NAME") == "push" and ref.startswith("refs/tags/v")
+if publish and ref != f"refs/tags/v{version}":
+    raise SystemExit("Release tag must match CFBundleShortVersionString")
 before = os.environ.get("BEFORE")
-if before and before != "0" * 40:
+if before and before != "0" * 40 and ref.startswith("refs/heads/"):
     previous = plistlib.loads(subprocess.check_output(["git", "show", f"{before}:Info.plist"]))
     old_version = previous["CFBundleShortVersionString"]
     old_build = int(previous["CFBundleVersion"])
@@ -26,12 +29,6 @@ if before and before != "0" * 40:
             return tuple(map(int, (value.split(".") + ["0", "0"])[:3]))
         if parts(version) <= parts(old_version) or int(build) <= old_build:
             raise SystemExit("A new release must increase both version and build number")
-        publish = True
-
-# A failed release can finish on the next push, after the fix passes CI.
-if os.environ.get("GITHUB_EVENT_NAME") == "push":
-    published_tag = subprocess.check_output(["git", "tag", "--list", f"v{version}"]).strip()
-    publish = publish or not published_tag
 
 print(f"version={version}")
 print(f"publish={str(publish).lower()}")

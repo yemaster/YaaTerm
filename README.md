@@ -93,9 +93,12 @@ Agent 执行框沿用当前 zsh 的左右提示符和配色。模型回复可以
 
 ```sh
 make test
+make benchmark
 ```
 
 测试覆盖分段 UTF-8、中文双宽字符、ANSI 颜色与光标移动、备用屏幕、会话标题、缩放及回滚上限，并通过两个真实 shell 检查 PTY 输入输出、独立工作目录、窗口尺寸传递及退出。输出的吞吐量只计解析与回滚。
+
+`make benchmark` 在 32、120 和 300 行高的屏幕上重放带 ANSI 颜色的中英文日志，在 10 万行和 100 万行时记录吞吐量及测试进程的物理内存占用。
 
 验证分屏时，可以在同一标签页中按 ⌘ D，在两边分别运行 `echo $$` 和 `stty size`，再拖动分隔线重新查看尺寸。按 ⇧ ⌘ D 可在当前分屏内继续上下分割。
 
@@ -109,6 +112,8 @@ make test
 
 「设置 → 关于」显示版本号和本版更新日志，可以打开 GitHub 仓库或提交反馈。默认每天自动检查，下载完成的更新会在退出时安装。两个开关均可在此调整，关闭自动检查后仍可点「立即检查」。
 
-首次构建会下载并校验 Sparkle 2.10.1。GitHub Actions 在推送和拉取请求时编译 Apple Silicon / Intel 通用应用并运行测试。发布新版时，递增 `Info.plist` 中的 `CFBundleShortVersionString` 与 `CFBundleVersion`，添加 `Resources/ReleaseNotes/<版本>.txt`，再合入默认分支。通过测试后，工作流会签名并发布安装包和更新清单。也可在默认分支手动运行工作流补发当前版本。
+首次构建会下载并校验 Sparkle 2.10.1。分支推送、拉取请求和手动运行 GitHub Actions 都会构建并测试 Apple Silicon / Intel 通用应用，安装包可从该次运行的 Artifacts 下载。
+
+重要更新准备发布时，递增 `Info.plist` 中的 `CFBundleShortVersionString` 与 `CFBundleVersion`，添加 `Resources/ReleaseNotes/<版本>.txt`，合入默认分支后给发布提交打上 `v<版本>` 标签并推送。GitHub Actions 校验标签并通过测试后，会签名并发布 GitHub Release 和 Sparkle 更新清单。
 
 发布签名使用仓库 Actions Secret `SPARKLE_PRIVATE_KEY`，对应公钥保存在 `Info.plist`。备份私钥，后续版本沿用同一密钥。首次安装包采用 ad-hoc 签名，尚未进行 Apple Developer ID 签名或公证。
