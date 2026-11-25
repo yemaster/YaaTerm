@@ -530,8 +530,8 @@ struct PaintedLine {
         if (!_wakeOnActivity && _screen->hasAgentBlocks()) { [self updateFrameSpacing]; self.needsDisplay=YES; }
         return;
     }
-    if ([note.object isEqual:AgentPromptColor]) {
-        if (_session.agentInputID) [_session updateAgentPromptColor:PreferredAgentPromptColor()
+    if ([note.object isEqual:AgentPromptColor] || [note.object isEqual:AgentDirectoryColor]) {
+        if (_session.agentInputID) [_session updateAgentPromptColor:PreferredAgentPromptColor() directoryColor:PreferredAgentDirectoryColor()
             wakeEditor:!_insideCommand && !_approvalSent && !_assistant.busy && _screen->bracketPaste && !_screen->alternate];
         return;
     }
@@ -792,7 +792,7 @@ struct PaintedLine {
                     if ([v->_session.agentInputID isEqual:identifier]) [v closeAssistant];
                 });
             };
-            if (![_session beginAgentInputWithColor:PreferredAgentPromptColor() ready:^(BOOL ready) {
+            if (![_session beginAgentInputWithColor:PreferredAgentPromptColor() directoryColor:PreferredAgentDirectoryColor() ready:^(BOOL ready) {
                 if (!ready) { [weak closeAssistant]; NSBeep(); }
             }]) { [self closeAssistant]; NSBeep(); return nil; }
             [self positionAssistant];

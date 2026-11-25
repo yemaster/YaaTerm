@@ -165,19 +165,20 @@
     static const char key[]="\033[99;7~";
     [self sendBytes:key length:sizeof(key)-1];
 }
-- (void)updateAgentPromptColor:(NSInteger)color wakeEditor:(BOOL)wake {
+- (void)updateAgentPromptColor:(NSInteger)color directoryColor:(NSInteger)directoryColor wakeEditor:(BOOL)wake {
     if (!_agentInputID) return;
     NSString *path=[_controlDirectory stringByAppendingPathComponent:@"prompt-color"];
-    if ([@(color).stringValue writeToFile:path atomically:YES encoding:NSASCIIStringEncoding error:nil] &&
+    NSString *colors=[NSString stringWithFormat:@"%ld %ld\n",(long)color,(long)directoryColor];
+    if ([colors writeToFile:path atomically:YES encoding:NSASCIIStringEncoding error:nil] &&
         wake && [self shellIsForeground]) [self wakeEditor];
 }
-- (BOOL)beginAgentInputWithColor:(NSInteger)color ready:(void (^)(BOOL))ready {
+- (BOOL)beginAgentInputWithColor:(NSInteger)color directoryColor:(NSInteger)directoryColor ready:(void (^)(BOOL))ready {
     if (!_directoryCreated || _agentInputID || ![self shellIsForeground]) return NO;
     NSString *identifier=NSUUID.UUID.UUIDString;
     NSString *path=[_controlDirectory stringByAppendingPathComponent:@"mode"];
     if (![identifier writeToFile:path atomically:YES encoding:NSASCIIStringEncoding error:nil]) return NO;
     _agentInputID=identifier;
-    [self updateAgentPromptColor:color wakeEditor:NO];
+    [self updateAgentPromptColor:color directoryColor:directoryColor wakeEditor:NO];
     [self wakeEditor]; _agentReady=[ready copy];
     __weak Session *weak=self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{

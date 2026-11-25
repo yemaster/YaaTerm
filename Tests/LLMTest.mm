@@ -215,6 +215,11 @@ static void checkForm() {
     [colors selectItemWithTag:4]; click(colors); assert(PreferredAgentPromptColor()==4);
     NSArray *fields=[settings valueForKey:@"fields"];
     auto field=^(NSString *key){ return [fields filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"identifier == %@",key]].firstObject; };
+    NSPopUpButton *directoryColors=field(AgentDirectoryColor);
+    assert(directoryColors.numberOfItems==7 && directoryColors.selectedTag==PreferredAgentDirectoryColor());
+    [directoryColors selectItemWithTag:2]; click(directoryColors);
+    assert(PreferredAgentDirectoryColor()==2 && PreferredAgentPromptColor()==4);
+    [directoryColors selectItemWithTag:0]; click(directoryColors); assert(PreferredAgentDirectoryColor()==0);
     NSPopUpButton *padding=field(AgentFramePadding);
     NSSwitch *stream=field(AgentStreamReplies);
     [padding selectItemWithTag:10]; click(padding); assert(PreferredAgentFramePadding()==10);

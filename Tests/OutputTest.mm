@@ -324,7 +324,7 @@ static void testTerminalOutput(NSString *directory) {
         withIntermediateDirectories:NO attributes:nil error:nil]);
     send(@"HOME=$ZDOTDIR; repeat 48 print -r -- earlier-output; print -r -- VISIBLE-BEFORE-AGENT; setopt promptsubst; marker='LEFT>'; PROMPT=$'THEME-TOP\\n%F{2}${marker}%f '; RPROMPT='%F{4}THEME-RIGHT%f'; printf '\\033]2;before-agent\\007'\r");
     until(^BOOL{ return [pane.sessionTitle isEqual:@"before-agent"]; });
-    SetTerminalPreference(AgentPromptColor,6);
+    SetTerminalPreference(AgentPromptColor,6); SetTerminalPreference(AgentDirectoryColor,0);
     NSUInteger subviews=pane.subviews.count;
     auto rowText=[&](int y) {
         std::string text;
@@ -368,6 +368,8 @@ static void testTerminalOutput(NSString *directory) {
     // Typing scrolls back to the live editor. Changing color keeps the draft intact.
     [pane insertText:@"print" replacementRange:NSMakeRange(NSNotFound,0)];
     until(^BOOL{ return colored("Agent >",yaa::Indexed+6); });
+    SetTerminalPreference(AgentDirectoryColor,2);
+    until(^BOOL{ return colored("~",yaa::Indexed+2) && colored("Agent >",yaa::Indexed+6); });
     SetTerminalPreference(AgentPromptColor,5);
     until(^BOOL{ return colored("Agent >",yaa::Indexed+5) && colored("print",yaa::Default); });
     [pane insertText:@" 仅作任务 > \"$ZDOTDIR/accidental-execution\"" replacementRange:NSMakeRange(NSNotFound,0)];
@@ -398,7 +400,7 @@ static void testTerminalOutput(NSString *directory) {
     };
     until(^BOOL{ return firstAgentReply && [pane valueForKey:@"agentProgress"] && stampOf("~ Agent > print")==0; });
     assert(!idlePromptCount() && !shown("THEME-TOP") && !shown("THEME-RIGHT"));
-    assert(colored("Agent >",yaa::Indexed+5));
+    assert(colored("~",yaa::Indexed+2) && colored("Agent >",yaa::Indexed+5));
     paint(pane,@"agent-waiting.png");
     firstAgentReply(); firstAgentReply=nil;
     until(^BOOL{ return pending(@"pwd"); });
@@ -442,7 +444,9 @@ static void testTerminalOutput(NSString *directory) {
     assert(shown("APPROVED-RESULT") && pane.subviews.count==subviews && window.firstResponder==pane);
     paint(pane,@"builtin-agent-in-terminal.png");
     until(^BOOL{ return stampOf("~/build %n Agent > ")==0; });
-    assert(colored("Agent >",yaa::Indexed+4));
+    assert(colored("~/build %n",yaa::Indexed+2) && colored("Agent >",yaa::Indexed+4));
+    SetTerminalPreference(AgentDirectoryColor,0);
+    until(^BOOL{ return colored("~/build %n",yaa::Default) && colored("Agent >",yaa::Indexed+4); });
     send(@"syntax-check\r"); until(^BOOL{ return pending(@")"); });
     key(YES);
     until(^BOOL{ return ![[pane valueForKey:@"awaitingApproval"] boolValue] && idlePromptCount()==1; });

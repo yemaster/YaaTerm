@@ -56,7 +56,7 @@ enum SettingID : NSInteger {
     EndedSession, History, TabMotion, CommandAlerts, Mode, FontFamily, FontWeight, FontSize, LightTheme, DarkTheme, Material,
     BackOpacity, WallpaperFile, ImageOpacity, APIFormat, APIEndpoint, APIKey, APIModel, APIActions, IdleSleep, Tables, WebLinks, FileLinks,
     AppVersion, AutoCheck, AutoInstall, CheckNow, Repository, Feedback, ReleaseNotes, ErrorHelp, AgentInput, LocalLauncher,
-    PromptColor, FramePadding, StreamReplies, SettingCount
+    PromptColor, DirectoryColor, FramePadding, StreamReplies, SettingCount
 };
 struct SettingInfo { SettingsSection section; NSString *key, *name, *group, *help; };
 static const SettingInfo &setting(SettingID index) {
@@ -95,6 +95,7 @@ static const SettingInfo &setting(SettingID index) {
         {APISection,BuiltInAgent,@"内置 Agent",@"终端功能",nil},
         {APISection,LocalAgentLauncher,@"本机 Agent",@"终端功能",nil},
         {APISection,AgentPromptColor,@"Agent 提示符颜色",@"Agent 显示",nil},
+        {APISection,AgentDirectoryColor,@"当前目录颜色",@"Agent 显示",nil},
         {APISection,AgentFramePadding,@"执行框内边距",@"Agent 显示",nil},
         {APISection,AgentStreamReplies,@"流式显示回复",@"Agent 显示",nil}
     };
@@ -494,7 +495,7 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     NSSearchField *_search;
     BOOL _showingResults;
     NSSegmentedControl *_mode, *_material;
-    NSPopUpButton *_promptColors;
+    NSPopUpButton *_promptColors, *_directoryColors;
     FontFamilyPicker *_fontFamily;
     ThemeGallery *_light, *_dark;
     WallpaperPicker *_wallpaper;
@@ -619,7 +620,7 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     for (NSView *view in _page.subviews.copy) [view removeFromSuperview];
     [_fields removeAllObjects]; [_labels removeAllObjects]; [_hints removeAllObjects]; [_groupHeadings removeAllObjects];
     _page.emptyMessage = nil; _lastGroup = nil;
-    _promptColors = nil;
+    _promptColors = nil; _directoryColors = nil;
     _light = nil; _dark = nil; _mode = nil; _material = nil; _fontFamily = nil; _wallpaper = nil; _opacity = nil; _imageOpacity = nil;
 }
 - (void)addUpdateControls {
@@ -706,10 +707,14 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     } else if (section == APISection) {
         [self addSwitch:ErrorHelp]; [self addSwitch:AgentInput]; [self addSwitch:LocalLauncher];
         if ([TerminalPreferences() boolForKey:BuiltInAgent] || [TerminalPreferences() boolForKey:LocalAgentLauncher]) {
-            _promptColors = [self picker:PromptColor];
-            [_promptColors addItemsWithTitles:@[@"红色",@"绿色",@"黄色",@"蓝色",@"紫色",@"青色"]];
-            for (NSInteger i=0; i<_promptColors.numberOfItems; ++i) [_promptColors itemAtIndex:i].tag = i+1;
-            [_promptColors selectItemWithTag:PreferredAgentPromptColor()];
+            _promptColors = [self picker:PromptColor]; _directoryColors = [self picker:DirectoryColor];
+            NSArray *names = @[@"终端文字",@"红色",@"绿色",@"黄色",@"蓝色",@"紫色",@"青色"];
+            for (NSPopUpButton *picker in @[_promptColors,_directoryColors]) {
+                for (NSInteger i=picker==_directoryColors ? 0 : 1; i<(NSInteger)names.count; ++i) {
+                    [picker addItemWithTitle:names[i]]; picker.lastItem.tag = i;
+                }
+                [picker selectItemWithTag:picker==_directoryColors ? PreferredAgentDirectoryColor() : PreferredAgentPromptColor()];
+            }
             NSPopUpButton *padding = [self picker:FramePadding];
             [padding addItemsWithTitles:@[@"无",@"标准",@"宽松"]];
             [padding itemAtIndex:0].tag = 0; [padding itemAtIndex:1].tag = 6; [padding itemAtIndex:2].tag = 10;
@@ -816,8 +821,13 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     for (NSView *field in _fields) if ([field isKindOfClass:SettingResult.class])
         ((NSButton *)field).image = symbol(@"chevron.forward",colors.secondaryText);
     _heading.textColor = colors.text; [_apiForm applyPalette];
-    for (NSMenuItem *item in _promptColors.itemArray)
-        item.image = symbol(@"circle.fill", TerminalIndexedColor(PreferredColorScheme(),(int)item.tag));
+    if (_promptColors) {
+        for (NSMenuItem *item in _directoryColors.itemArray) {
+            NSColor *swatch=item.tag ? TerminalIndexedColor(PreferredColorScheme(),(int)item.tag) : SchemeInk(PreferredColorScheme(),SchemeText);
+            item.image = symbol(@"circle.fill",swatch);
+            [_promptColors.menu itemWithTag:item.tag].image = item.image;
+        }
+    }
     for (NSTextField *group in _groupHeadings.objectEnumerator) group.textColor = colors.secondaryText;
     for (NSTextField *label in _labels) label.textColor = colors.text;
     for (SectionButton *button : _sections) {

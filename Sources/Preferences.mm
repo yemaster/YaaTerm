@@ -22,6 +22,7 @@ NSString *const SleepIdleTabs = @"SleepIdleTabs";
 NSString *const AIErrorExplanations = @"AIErrorExplanations";
 NSString *const BuiltInAgent = @"BuiltInAgent";
 NSString *const AgentPromptColor = @"AgentPromptColor";
+NSString *const AgentDirectoryColor = @"AgentDirectoryColor";
 NSString *const AgentFramePadding = @"AgentFramePadding";
 NSString *const AgentStreamReplies = @"AgentStreamReplies";
 NSString *const LocalAgentLauncher = @"LocalAgentLauncher";
@@ -41,7 +42,7 @@ NSUserDefaults *TerminalPreferences(void) {
                                   AppearanceModeKey:@(mode), LightSchemeKey:@(CatppuccinLatte),
                                   DarkSchemeKey:@(CatppuccinMocha), BackgroundOpacity:@100, BackgroundImageOpacity:@25,
                                   BackgroundMaterialKey:@(PlainBackground),
-                                  AIErrorExplanations:@YES, BuiltInAgent:@YES, LocalAgentLauncher:@YES, AgentPromptColor:@6,
+                                  AIErrorExplanations:@YES, BuiltInAgent:@YES, LocalAgentLauncher:@YES, AgentPromptColor:@6, AgentDirectoryColor:@0,
                                   AgentFramePadding:@6, AgentStreamReplies:@YES,
                                   PrettyTables:@YES, OpenWebLinks:@YES, RevealFileLinks:@YES,
                                   TerminalFontSize:@14, TerminalFontFamily:BundledFontFamily,
@@ -56,6 +57,10 @@ NSInteger PreferredOpacity(NSString *key) {
 NSInteger PreferredAgentPromptColor(void) {
     NSInteger index = [TerminalPreferences() integerForKey:AgentPromptColor];
     return index >= 1 && index <= 6 ? index : 6;
+}
+NSInteger PreferredAgentDirectoryColor(void) {
+    NSInteger index = [TerminalPreferences() integerForKey:AgentDirectoryColor];
+    return index >= 1 && index <= 6 ? index : 0; // Zero uses the theme foreground.
 }
 NSInteger PreferredAgentFramePadding(void) {
     NSInteger value = [TerminalPreferences() integerForKey:AgentFramePadding];
@@ -187,6 +192,7 @@ void UpdateSystemAppearance(NSAppearance *appearance) {
 }
 void SetTerminalPreference(NSString *key, NSInteger value) {
     if ([key isEqual:AgentPromptColor] && (value < 1 || value > 6)) return;
+    if ([key isEqual:AgentDirectoryColor] && (value < 0 || value > 6)) return;
     if ([key isEqual:AgentFramePadding] && value!=0 && value!=6 && value!=10) return;
     if ([key isEqual:TerminalFontWeight] && !validFontWeight(value)) return;
     if ([key isEqual:BackgroundMaterialKey] && (value < PlainBackground || value > LiquidGlassBackground)) return;

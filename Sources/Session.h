@@ -5,8 +5,8 @@
 @property (copy) void (^onExit)(void);
 @property (nonatomic) BOOL tracksCommands;
 @property (readonly) NSString *agentInputID;
-- (BOOL)beginAgentInputWithColor:(NSInteger)color ready:(void (^)(BOOL))ready;
-- (void)updateAgentPromptColor:(NSInteger)color wakeEditor:(BOOL)wake;
+- (BOOL)beginAgentInputWithColor:(NSInteger)color directoryColor:(NSInteger)directoryColor ready:(void (^)(BOOL))ready;
+- (void)updateAgentPromptColor:(NSInteger)color directoryColor:(NSInteger)directoryColor wakeEditor:(BOOL)wake;
 - (void)agentInputReady:(NSString *)identifier;
 - (NSString *)takeAgentTask:(NSString *)identifier;
 - (void)endAgentInput:(BOOL)wakeEditor;
