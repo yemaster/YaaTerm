@@ -76,7 +76,7 @@ static const SettingInfo &setting(SettingID index) {
         {AppearanceSection,BackgroundImageOpacity,@"图片不透明度",@"背景",nil},
         {APISection,@"LLMFormat",@"API 格式",@"连接",nil},
         {APISection,@"LLMEndpoint",@"服务地址",@"连接",@"可填完整地址或 /v1 基础地址。"},
-        {APISection,@"LLMKey",@"API Key",@"连接",@"保存在钥匙串中。"},
+        {APISection,@"LLMKey",@"API Key",@"连接",@"仅在本机加密保存。"},
         {APISection,@"LLMModel",@"模型名称",@"连接",nil},
         {APISection,@"LLMActions",@"",@"连接",nil},
         {PerformanceSection,SleepIdleTabs,@"休眠闲置标签页",@"标签页",@"后台闲置 15 分钟后休眠。有前台任务时保持唤醒。"},

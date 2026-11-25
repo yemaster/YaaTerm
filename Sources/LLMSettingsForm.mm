@@ -136,7 +136,7 @@
         LLMSettingsForm *form = weakSelf;
         if (!form) return;
         if (!error) { form->_usingSavedKey = YES; form->_savedService = draft.requestURL; }
-        [form setFormEnabled:YES]; [form showStatus:error ?: @"已保存到钥匙串。"];
+        [form setFormEnabled:YES]; [form showStatus:error ?: @"已在本机加密保存。"];
     }];
 }
 @end

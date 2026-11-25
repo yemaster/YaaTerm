@@ -5,32 +5,44 @@
 #import "SettingsView.h"
 #import "Preferences.h"
 #import <Security/Security.h>
+#include <sys/stat.h>
 #include <cassert>
 #include <initializer_list>
 
-// This test target substitutes only the three Keychain calls, keeping the user's login keychain untouched.
-static NSData *savedRecord;
-static BOOL denyWrite = NO;
+// Use an isolated local store and a noninteractive fixture for legacy migration.
+static NSURL *storeDirectory;
+static NSData *legacyRecord;
+static NSUInteger legacyReads;
+static Boolean legacyUI=true;
+static BOOL lockedLegacy=NO;
+OSStatus SecKeychainGetUserInteractionAllowed(Boolean *allowed) { *allowed=legacyUI; return errSecSuccess; }
+OSStatus SecKeychainSetUserInteractionAllowed(Boolean allowed) { legacyUI=allowed; return errSecSuccess; }
+@interface LLMConfiguration (Storage)
++ (NSURL *)credentialDirectory;
+@end
+@interface LLMConfiguration (CredentialFixture)
++ (NSURL *)fixtureDirectory;
+@end
+@implementation LLMConfiguration (CredentialFixture)
++ (NSURL *)fixtureDirectory { return storeDirectory; }
+@end
 static void checkQuery(CFDictionaryRef query) {
-    NSDictionary *q = (__bridge NSDictionary *)query;
+    NSDictionary *q=(__bridge NSDictionary *)query;
     assert([q[(id)kSecClass] isEqual:(id)kSecClassGenericPassword]);
     assert([q[(id)kSecAttrService] isEqual:@"dev.yaaterm.llm"] && [q[(id)kSecAttrAccount] isEqual:@"configuration"]);
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    assert([q[(id)kSecUseAuthenticationUI] isEqual:(id)kSecUseAuthenticationUIFail]);
+#pragma clang diagnostic pop
 }
 OSStatus SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
-    checkQuery(query);
-    if (!savedRecord) return errSecItemNotFound;
-    *result = CFBridgingRetain(savedRecord); return errSecSuccess;
+    checkQuery(query); assert(!legacyUI); ++legacyReads;
+    if (lockedLegacy) return errSecInteractionNotAllowed;
+    if (!legacyRecord) return errSecItemNotFound;
+    *result=CFBridgingRetain(legacyRecord); return errSecSuccess;
 }
-OSStatus SecItemUpdate(CFDictionaryRef query, CFDictionaryRef changes) {
-    checkQuery(query);
-    if (denyWrite) return errSecAuthFailed;
-    if (!savedRecord) return errSecItemNotFound;
-    savedRecord = ((__bridge NSDictionary *)changes)[(id)kSecValueData]; return errSecSuccess;
-}
-OSStatus SecItemAdd(CFDictionaryRef query, CFTypeRef *result) {
-    checkQuery(query);
-    if (savedRecord) return errSecDuplicateItem;
-    savedRecord = ((__bridge NSDictionary *)query)[(id)kSecValueData]; return errSecSuccess;
+OSStatus SecItemDelete(CFDictionaryRef query) {
+    checkQuery(query); assert(!legacyUI); legacyRecord=nil; return errSecSuccess;
 }
 
 static void waitFor(BOOL (^done)(void)) {
@@ -119,7 +131,7 @@ static void checkProtocols() {
         assert(!anthropic == [[request valueForHTTPHeaderField:@"Authorization"] isEqual:@"Bearer test-only"]);
         assert(!probe(config,200,bodies[i]));
         assert(probe(config,200,bodies[(i+1)%3]).length);
-        assert(!savedRecord);
+        assert(!legacyRecord);
     }
     FixtureConfig *config = profile(@"https://fixture.invalid/proxy/v1?version=fixture",LLMResponses);
     assert([config.requestURL.absoluteString isEqual:@"https://fixture.invalid/proxy/v1/responses?version=fixture"]);
@@ -142,6 +154,7 @@ static void click(NSControl *control) {
     call(control.target,control.action,control);
 }
 static void checkForm() {
+    lockedLegacy=YES;
     SettingsView *settings = [[SettingsView alloc] initWithFrame:NSMakeRect(0,0,920,526)];
     assert(![settings valueForKey:@"apiForm"]);
     NSArray *sections = [settings.subviews filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"identifier == %@",@"AI 服务"]];
@@ -156,16 +169,26 @@ static void checkForm() {
     }
     NSButton *save = [form valueForKey:@"save"], *test = [form valueForKey:@"test"];
     NSTextField *status = [form valueForKey:@"status"];
-    click(test); assert(status.stringValue.length && !savedRecord);
+    NSURL *blob=[storeDirectory URLByAppendingPathComponent:@"profile.enc"];
+    assert([status.stringValue containsString:@"重新输入"] && legacyUI); lockedLegacy=NO;
+    click(test); assert(status.stringValue.length && ![NSData dataWithContentsOfURL:blob]);
     form.endpoint.stringValue = @"https://fixture.invalid/v1";
     form.apiKey.stringValue = @"fixture-secret";
     form.model.stringValue = @"chosen-model";
     [form.format selectItemAtIndex:LLMResponses]; click(save);
-    waitFor(^BOOL{ return save.enabled; }); assert([status.stringValue containsString:@"已保存"] && savedRecord);
-    NSData *first = savedRecord;
-    denyWrite = YES; form.model.stringValue = @"changed"; click(save);
-    waitFor(^BOOL{ return save.enabled; }); assert(savedRecord == first && [status.stringValue containsString:@"钥匙串"]);
-    denyWrite = NO; click(save); waitFor(^BOOL{ return save.enabled; }); assert(![savedRecord isEqual:first]);
+    waitFor(^BOOL{ return save.enabled; }); assert([status.stringValue containsString:@"已在本机加密保存"]);
+    NSData *first=[NSData dataWithContentsOfURL:blob];
+    NSData *secret=[@"fixture-secret" dataUsingEncoding:NSUTF8StringEncoding];
+    assert(first.length && [first rangeOfData:secret options:0 range:NSMakeRange(0,first.length)].location==NSNotFound);
+    for (NSString *name in @[@"profile.key",@"profile.enc"]) {
+        struct stat info{}; assert(!stat([storeDirectory URLByAppendingPathComponent:name].fileSystemRepresentation,&info) && (info.st_mode & 0777)==0600);
+    }
+    NSUInteger reads=legacyReads;
+    assert(!chmod(storeDirectory.fileSystemRepresentation,0755));
+    form.model.stringValue=@"changed"; click(save); waitFor(^BOOL{ return save.enabled; });
+    assert([[NSData dataWithContentsOfURL:blob] isEqual:first] && [status.stringValue containsString:@"无法保存"]);
+    assert(!chmod(storeDirectory.fileSystemRepresentation,0700));
+    click(save); waitFor(^BOOL{ return save.enabled; }); assert(![[NSData dataWithContentsOfURL:blob] isEqual:first]);
 
     LLMSettingsForm *reopened = [[LLMSettingsForm alloc] initWithFrame:form.bounds];
     waitFor(^BOOL{ return reopened.apiKey.enabled; });
@@ -177,9 +200,20 @@ static void checkForm() {
     SetTerminalPreference(AIErrorExplanations,NO);
     assert([settings valueForKey:@"apiForm"]==form);
     SetTerminalPreference(BuiltInAgent,NO);
-    assert(![settings valueForKey:@"apiForm"] && !form.superview && savedRecord);
+    assert(![settings valueForKey:@"apiForm"] && !form.superview && [NSData dataWithContentsOfURL:blob]);
     SetTerminalPreference(BuiltInAgent,YES); SetTerminalPreference(AIErrorExplanations,YES);
-    assert([settings valueForKey:@"apiForm"]!=form);
+    assert([settings valueForKey:@"apiForm"]!=form && legacyReads==reads);
+    NSMutableData *damaged=[[NSData dataWithContentsOfURL:blob] mutableCopy];
+    ((uint8_t *)damaged.mutableBytes)[damaged.length-1]^=1;
+    assert([damaged writeToURL:blob atomically:YES]);
+    __block BOOL checked=NO;
+    [LLMConfiguration loadSaved:^(LLMConfiguration *p,NSString *e){ assert(!p && e && legacyReads==reads); checked=YES; }];
+    waitFor(^BOOL{ return checked; });
+    assert([NSFileManager.defaultManager removeItemAtURL:blob error:nil]);
+    legacyRecord=[NSJSONSerialization dataWithJSONObject:@{@"endpoint":@"https://fixture.invalid/v1",@"model":@"old",@"key":@"old-secret",@"format":@0} options:0 error:nil];
+    checked=NO;
+    [LLMConfiguration loadSaved:^(LLMConfiguration *p,NSString *e){ assert(!e && [p.apiKey isEqual:@"old-secret"] && !legacyRecord && legacyUI); checked=YES; }];
+    waitFor(^BOOL{ return checked; });
 }
 @interface FixtureConfig (AssistantTest)
 + (void)loadFixture:(void (^)(LLMConfiguration *,NSString *))completion;
@@ -283,6 +317,12 @@ static void checkAssistant() {
     assert([files removeItemAtPath:dir error:nil]);
 }
 int main() {
-    @autoreleasepool { checkProtocols(); checkForm(); checkAssistant(); }
-    puts("Three LLM wire formats, Keychain, agent directory/read loop, reviewed shell continuation and error diagnosis OK");
+    @autoreleasepool {
+        storeDirectory=[NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
+        Method directory=class_getClassMethod(LLMConfiguration.class,@selector(credentialDirectory));
+        method_setImplementation(directory,method_getImplementation(class_getClassMethod(LLMConfiguration.class,@selector(fixtureDirectory))));
+        checkProtocols(); checkForm(); checkAssistant();
+        assert([NSFileManager.defaultManager removeItemAtURL:storeDirectory error:nil]);
+    }
+    puts("Three LLM wire formats, local encryption and migration, agent directory/read loop, reviewed shell continuation and error diagnosis OK");
 }

@@ -77,7 +77,7 @@ make run
 
 「性能 → 回滚记录 → 回滚内存缓存」可选 500、1,500 或 3,000 行。调低行数会将更早的记录转入会话临时文件，向上滚动或搜索时按需读取。选择「关闭」会清除现有回滚，并停止保存后续回滚。磁盘空间不足时搜索可能显示「历史不完整」。
 
-「AI 服务」可保存一组服务地址、API Key、API 格式和模型名称。服务地址支持完整请求路径，也可以填写基础地址，例如 `https://api.openai.com/v1` 或 `https://api.anthropic.com/v1`。本机服务可填写 `http://localhost:端口/v1`。选择格式后，填写服务商提供的模型 ID。「测试连接」会向当前表单里的模型发送一条简短消息，服务商可能计费。「保存」将配置写入 macOS 钥匙串。三种格式分别使用各自的模型接口。[OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create) · [OpenAI Responses](https://developers.openai.com/api/reference/resources/responses/methods/create) · [Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create)
+「AI 服务」可保存一组服务地址、API Key、API 格式和模型名称。服务地址支持完整请求路径，也可以填写基础地址，例如 `https://api.openai.com/v1` 或 `https://api.anthropic.com/v1`。本机服务可填写 `http://localhost:端口/v1`。选择格式后，填写服务商提供的模型 ID。「测试连接」会向当前表单里的模型发送一条简短消息，服务商可能计费。「保存」将配置加密写入本机的 `~/Library/Application Support/YaaTerm/Credentials/`。该目录仅限当前 macOS 用户访问，同时包含密文及本机解密密钥。旧配置可在免交互读取时自动迁移，否则需重新填写一次。三种格式分别使用各自的模型接口。[OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create) · [OpenAI Responses](https://developers.openai.com/api/reference/resources/responses/methods/create) · [Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create)
 
 在「会话」菜单中也可以新建标签页和分屏。每个分屏从个人目录启动独立的登录 shell，可以继续嵌套分割。点击正文切换输入焦点，拖动分隔线调整大小。分隔线随主题显示为一个物理像素，两侧都可以拖动。用滚轮或触控板回看输出。在 Vim 等全屏程序中，开启鼠标模式时滚动指针所在位置，使用默认备用屏幕滚动时按上下方向键移动。拖选可见文字后按 ⌘ C 复制，⌘ V 粘贴。Control-C 中断前台命令。
 

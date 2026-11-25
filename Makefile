@@ -79,7 +79,7 @@ build/tab-test: $(SPARKLE)/.ready Tests/TabTest.mm $(filter-out Sources/Main.mm,
 
 build/llm-test: $(SPARKLE)/.ready Sources/TerminalAssistant.mm Sources/AppUpdates.mm Tests/LLMTest.mm Sources/LLMConfiguration.mm Sources/LLMSettingsForm.mm Sources/SettingsView.mm Sources/Wallpaper.mm Sources/Palette.mm Sources/Preferences.mm $(wildcard Sources/*.h Sources/*.hpp Sources/*.inc)
 	mkdir -p build
-	$(CXX) $(FLAGS) -F$(SPARKLE) -fobjc-arc -ISources -DSecItemCopyMatching=LLMTestCopyMatching -DSecItemUpdate=LLMTestUpdate -DSecItemAdd=LLMTestAdd $(filter %.mm,$^) -framework AppKit -framework UniformTypeIdentifiers -framework ImageIO -framework Security -o $@
+	$(CXX) $(FLAGS) -F$(SPARKLE) -fobjc-arc -ISources -DSecItemCopyMatching=LLMTestCopyMatching -DSecItemDelete=LLMTestDelete -DSecKeychainGetUserInteractionAllowed=LLMTestGetInteraction -DSecKeychainSetUserInteractionAllowed=LLMTestSetInteraction $(filter %.mm,$^) -framework AppKit -framework UniformTypeIdentifiers -framework ImageIO -framework Security -o $@
 
 build/vim-test: Tests/VimTest.mm Sources/Session.mm $(GRID) $(GRID_HEADERS) Sources/Session.h
 	mkdir -p build
