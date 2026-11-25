@@ -71,6 +71,32 @@ _yaaterm_agent_prompt() {
     fi
     PROMPT='' RPROMPT=''
 }
+_yaaterm_recall_task() {
+    emulate -L zsh
+    [[ -n ${_yaaterm_editing-} && -z ${_yaaterm_task_active-} ]] || return 0
+    if [[ $KEYS == *A ]]; then
+        (( _yaaterm_history_offset < $#_yaaterm_task_history )) || return 0
+        if (( !_yaaterm_history_offset )); then
+            _yaaterm_history_draft=$BUFFER _yaaterm_draft_cursor=$CURSOR
+        fi
+        (( ++_yaaterm_history_offset ))
+    else
+        (( _yaaterm_history_offset )) || return 0
+        (( --_yaaterm_history_offset ))
+    fi
+    if (( _yaaterm_history_offset )); then
+        BUFFER=${_yaaterm_task_history[-_yaaterm_history_offset]} CURSOR=${#BUFFER}
+    else
+        BUFFER=$_yaaterm_history_draft CURSOR=$_yaaterm_draft_cursor
+    fi
+}
+zle -N _yaaterm_recall_task
+# YaaTerm sends these private keys only at the task prompt. Leave the user's
+# arrow bindings intact for the shell and for programs running inside the Agent.
+for _yaaterm_map in emacs viins vicmd; do
+    bindkey -M "$_yaaterm_map" $'\e[99;7A' _yaaterm_recall_task $'\e[99;7B' _yaaterm_recall_task
+done
+unset _yaaterm_map
 _yaaterm_compose() {
     [[ -z ${_yaaterm_editing-} ]] || return 0
     local _yaaterm_editing=1 _yaaterm_edit_op='' goal current=''
@@ -83,6 +109,8 @@ _yaaterm_compose() {
         precmd_functions=(_yaaterm_restore_prompt "${precmd_functions[@]}" _yaaterm_agent_prompt)
     fi
     [[ -n ${_yaaterm_mode-} ]] || return 0
+    local -i _yaaterm_history_offset=0 _yaaterm_draft_cursor=0
+    local _yaaterm_history_draft=''
     local prefix=$PREDISPLAY suffix=$POSTDISPLAY _yaaterm_review_id _yaaterm_review_line
     local -a _yaaterm_prompt_styles
     BUFFER='' CURSOR=0 PREDISPLAY='' POSTDISPLAY=''
@@ -121,6 +149,12 @@ _yaaterm_compose() {
             zle -M '正在提交任务'; continue
         fi
         builtin print -rn -- "$goal" >| "$_yaaterm_ai_dir/task-$_yaaterm_mode" || break
+        if [[ $goal != ${_yaaterm_task_history[-1]-} && $goal != /exit && $goal != /stop ]]; then
+            typeset -ga _yaaterm_task_history
+            _yaaterm_task_history+=("$goal")
+            (( $#_yaaterm_task_history <= 32 )) || _yaaterm_task_history[1]=()
+        fi
+        _yaaterm_history_offset=0 _yaaterm_history_draft=''
         # Retain the colored goal in the transcript before clearing the editor.
         zle -R
         zle -I

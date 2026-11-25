@@ -730,11 +730,36 @@ static void testTerminalOutput(NSString *directory) {
     until(^BOOL{ return shown("LAST-STREAM-LINE") && idlePromptCount()==1; });
     auto transcript=snapshot();
     assert(transcript.find("First streaming line")==transcript.rfind("First streaming line"));
+    auto editorText=[&]() -> std::string {
+        for (int y=editingSize.ws_row-1;y>=0;--y) {
+            std::string row=rowText(y);
+            auto at=row.find("Agent > ");
+            if (at==std::string::npos) continue;
+            row=row.substr(at+8); row.erase(row.find_last_not_of(' ')+1); return row;
+        }
+        return {};
+    };
+    auto arrow=[&](BOOL up) {
+        unichar ch=up ? NSUpArrowFunctionKey : NSDownArrowFunctionKey;
+        NSString *key=[NSString stringWithCharacters:&ch length:1];
+        [pane keyDown:[NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0
+            timestamp:0 windowNumber:window.windowNumber context:nil characters:key charactersIgnoringModifiers:key
+            isARepeat:NO keyCode:up ? 126 : 125]];
+    };
+    send(@"drft\002\002"); until(^BOOL{ return editorText()=="drft"; });
+    arrow(YES); until(^BOOL{ return editorText()=="stream-check"; });
+    arrow(YES); until(^BOOL{ return editorText()=="interrupt-read"; });
+    arrow(NO); until(^BOOL{ return editorText()=="stream-check"; });
+    arrow(NO); until(^BOOL{ return editorText()=="drft"; });
+    send(@"a"); until(^BOOL{ return editorText()=="draft"; });
+    send(@"\025"); until(^BOOL{ return editorText().empty(); });
     method_setImplementation(load,original);
     [pane insertText:@"/exit" replacementRange:NSMakeRange(NSNotFound,0)];
     [pane doCommandBySelector:@selector(insertNewline:)];
     until(^BOOL{ return !pane.assistantVisible; });
     until(^BOOL{ return stampOf("LEFT> ")==0 && shown("THEME-RIGHT") && shown("THEME-TOP"); });
+    send(@"print SHELL-HISTORY-$((++recall_count))\r"); until(^BOOL{ return stampOf("SHELL-HISTORY-1")==0; });
+    arrow(YES); send(@"\r"); until(^BOOL{ return stampOf("SHELL-HISTORY-2")==0; });
     SetTerminalPreference(BuiltInAgent,NO);
     SetTerminalPreference(AIErrorExplanations,NO);
     SetTerminalPreference(LocalAgentLauncher,NO);
@@ -760,6 +785,8 @@ printf '%s\n' '{"type":"result","result":"TASK-FINISHED"}'
     send(@"print -r -- saved-");
     [pane showLocalAgent:@"claude"];
     assert(pane.assistantVisible && session.tracksCommands && session==[pane valueForKey:@"session"]);
+    arrow(YES); until(^BOOL{ return editorText()=="stream-check"; });
+    arrow(NO); until(^BOOL{ return editorText().empty(); });
     [pane insertText:@"show progress" replacementRange:NSMakeRange(NSNotFound,0)];
     [pane doCommandBySelector:@selector(insertNewline:)];
     until(^BOOL{ return [[pane valueForKey:@"awaitingApproval"] boolValue] && shown("Enter / Ctrl+C"); });

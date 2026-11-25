@@ -1919,6 +1919,10 @@ static NSString *selectedFieldText(NSString *value, ListingLayout::Column col, b
     if (modifiers & NSEventModifierFlagCommand) { [super keyDown:event]; return; }
     if ([self agentOwnsEditor]) return;
     if (!_marked.length) {
+        if (!modifiers && (event.keyCode==125 || event.keyCode==126) && _session.agentInputID &&
+            !_insideCommand && !_screen->alternate) {
+            [self sendString:event.keyCode==126 ? @"\033[99;7A" : @"\033[99;7B"]; return;
+        }
         NSString *seq = nil;
         switch (event.keyCode) {
             case 123: seq = _screen->applicationCursor ? @"\033OD" : @"\033[D"; break;
