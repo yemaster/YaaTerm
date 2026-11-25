@@ -91,7 +91,8 @@ static NSBitmapImageRep *paint(TerminalView *pane, NSString *name) {
     CGContextTranslateCTM(cg,0,size.height); CGContextScaleCTM(cg,1,-1);
     NSGraphicsContext.currentContext = [NSGraphicsContext graphicsContextWithCGContext:cg flipped:YES];
     [pane drawRect:pane.bounds];
-    for (NSView *view in pane.subviews)
+    for (NSView *view in pane.subviews) {
+        if (view.hidden) continue;
         if ([view isKindOfClass:NSButton.class]) [[(NSButton *)view cell] drawWithFrame:view.frame inView:pane];
         else if ([view isKindOfClass:NSProgressIndicator.class]) {
             [NSGraphicsContext saveGraphicsState];
@@ -99,6 +100,7 @@ static NSBitmapImageRep *paint(TerminalView *pane, NSString *name) {
             [view drawRect:view.bounds];
             [NSGraphicsContext restoreGraphicsState];
         }
+    }
     [NSGraphicsContext restoreGraphicsState];
     NSString *dir = NSProcessInfo.processInfo.environment[@"YAATERM_TEST_PREVIEW"];
     if (name && dir) [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
@@ -329,17 +331,33 @@ static void testTerminalOutput(NSString *directory) {
         NSString *json=[[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:result options:0 error:nil] encoding:NSUTF8StringEncoding];
         diagnosisReply(json,nil); diagnosisReply=nil;
     };
-    auto textOnGrid=[&](NSString *needle) {
+    auto rowOnGrid=[&](NSString *needle) {
         NSInteger rows=(NSHeight(pane.bounds)-24)/[[pane valueForKey:@"lh"] doubleValue];
         for (int y=0; y<rows; ++y) {
             const auto &row=[pane displayRow:y];
             NSMutableString *line=[NSMutableString string];
             for (const auto &cell:row) if (cell.ch && cell.ch<=0xffff) [line appendFormat:@"%C",(unichar)cell.ch];
-            if ([line containsString:needle]) return true;
+            if ([line containsString:needle]) return y;
         }
-        return false;
+        return -1;
     };
+    auto textOnGrid=[&](NSString *needle){ return rowOnGrid(needle)>=0; };
     auto fixButton=^NSButton *{ return [pane valueForKey:@"fixButton"]; };
+    auto checkErrorPosition=[&](NSString *needle,NSString *preview) {
+        paint(pane,preview);
+        NSButton *button=fixButton();
+        int cols=(int)((NSWidth(pane.bounds)-32)/cw);
+        int row=rowOnGrid([needle substringToIndex:MIN(needle.length,(NSUInteger)cols)]);
+        assert(row>=0 && button && !button.hidden);
+        row+=(int)(needle.length-1)/cols;
+        assert(fabs(NSMinY(button.frame)-floor([pane topOfRow:row]))<1);
+        const auto &cells=[pane displayRow:row]; int end=(int)cells.size();
+        while (end>0 && cells[end-1].ch==' ' && !cells[end-1].mark) --end;
+        CGFloat after=16+end*cw;
+        if (button.imagePosition!=NSImageOnly) assert(fabs(NSMinX(button.frame)-after-6)<=1);
+        else assert(NSMinX(button.frame)>=floor(after) || NSMaxX(button.frame)<=16);
+    };
+    checkErrorPosition(@"zsh: command not found: yaaterm_no_such_executable",nil);
     winsize beforeFix{}, duringFix{}; int fixFD=[[session valueForKey:@"fd"] intValue];
     assert(ioctl(fixFD,TIOCGWINSZ,&beforeFix)==0);
     NSUInteger views=pane.subviews.count;
@@ -357,7 +375,8 @@ static void testTerminalOutput(NSString *directory) {
     until(^BOOL{ return !pane.hasFailedCommand && [NSFileManager.defaultManager fileExistsAtPath:proof]; });
     assert([[NSString stringWithContentsOfFile:proof encoding:NSUTF8StringEncoding error:nil] isEqual:@"verified\n"]);
     // A late suggestion must preserve the text and cursor of a partially typed shell command.
-    send(@"false\r"); until(^BOOL{ return pane.hasFailedCommand; }); explain();
+    send(@"false\r"); until(^BOOL{ return pane.hasFailedCommand; });
+    checkErrorPosition(@"❯ false",nil); explain();
     send(@"print -r DRAFT-KEPT\001"); // Ctrl+A leaves the insertion point at the start.
     respond(@"Literal $(touch INJECTED) \033]2;injected\007",@"touch INJECTED");
     until(^BOOL{ return [fixButton().title isEqual:@"复制建议"] && textOnGrid(@"建议命令  touch INJECTED"); });
@@ -372,6 +391,14 @@ static void testTerminalOutput(NSString *directory) {
     NSSize fullSize=pane.frame.size;
     [pane setFrameSize:NSMakeSize(362,230)]; send(@"PROMPT=$'worktree\\n❯ '; RPROMPT='main'; clear\rgti status\r");
     until(^BOOL{ return [[[pane valueForKey:@"failure"] objectForKey:@"command"] isEqual:@"gti status"]; });
+    checkErrorPosition(@"zsh: command not found: gti",nil);
+    [pane setFrameSize:NSMakeSize(274,230)];
+    checkErrorPosition(@"zsh: command not found: gti",@"button-narrow.png");
+    assert(fixButton().imagePosition==NSImageOnly);
+    [pane setFrameSize:NSMakeSize(235,230)];
+    // The last fragment of the same error now has room for a text button.
+    checkErrorPosition(@"zsh: command not found: gti",nil);
+    [pane setFrameSize:NSMakeSize(362,230)];
     [pane removeFromSuperview]; assert(!fixButton() && pane.hasFailedCommand);
     [window.contentView addSubview:pane]; assert(fixButton());
     missingProfile=YES; [pane explainFailure:nil];
@@ -380,21 +407,33 @@ static void testTerminalOutput(NSString *directory) {
     [pane explainFailure:nil]; assert(configured); missingProfile=NO; pane.configureAI=nil;
     explain(); diagnosisReply(nil,@"模型服务连接超时。"); diagnosisReply=nil;
     until(^BOOL{ return [fixButton().title isEqual:@"重试分析"] && textOnGrid(@"模型服务连接超时。"); });
-    explain(); respond(@"命令名写反了，应为 git。",@"git status");
+    explain(); respond(@"命令名写反了，应为 git。\n参数可以保留。",@"git status");
     until(^BOOL{ return [fixButton().title isEqual:@"复制建议"] && textOnGrid(@"❯ git status"); });
     assert(textOnGrid(@"命令名写反了") && textOnGrid(@"回车执行") && textOnGrid(@"worktree") && textOnGrid(@"main"));
+    assert(rowOnGrid(@"参数可以保留。")==rowOnGrid(@"命令名写反了")+1 && rowOnGrid(@"回车执行")==rowOnGrid(@"参数可以保留。")+2);
     paint(pane,@"diagnosis-narrow.png");
     send(@"\003"); [pane setFrameSize:fullSize];
     send(@"PROMPT='%F{4}~/project%f ❯ '; RPROMPT=''; clear\rgti status --short\r");
     until(^BOOL{ return [[[pane valueForKey:@"failure"] objectForKey:@"command"] isEqual:@"gti status --short"]; });
-    explain(); respond(@"找不到 gti，你可能想输入 git。",@"git status --short");
+    checkErrorPosition(@"zsh: command not found: gti",@"button-at-error.png");
+    explain(); respond(@"\n  找不到 gti，你可能想输入 git。  \n",@"git status --short");
     until(^BOOL{ return [fixButton().title isEqual:@"复制建议"] && textOnGrid(@"❯ git status --short"); });
+    int cause=rowOnGrid(@"找不到 gti");
+    assert(cause==rowOnGrid(@"zsh: command not found: gti")+1);
+    assert(rowOnGrid(@"回车执行")==cause+2 && rowOnGrid(@"❯ git status --short")==cause+3);
     NSInteger mode=[TerminalPreferences() integerForKey:AppearanceModeKey];
     SetTerminalPreference(AppearanceModeKey,AlwaysLight); paint(pane,@"diagnosis-light.png");
     SetTerminalPreference(AppearanceModeKey,AlwaysDark); paint(pane,@"diagnosis-dark.png");
     SetTerminalPreference(AppearanceModeKey,mode); send(@"\r");
     until(^BOOL{ return !pane.hasFailedCommand; });
-    send(@"false\r"); until(^BOOL{ return pane.hasFailedCommand; }); explain();
+    send(@"print -u2 -- scroll-anchor-{failed,here}; false\r");
+    until(^BOOL{ return pane.hasFailedCommand && textOnGrid(@"scroll-anchor-failed"); });
+    for (int i=0;i<34;++i) [pane consume:"\r\nlater output"];
+    paint(pane,nil); assert(fixButton().hidden);
+    CGEventRef scroll=CGEventCreateScrollWheelEvent(nullptr,kCGScrollEventUnitLine,1,5);
+    [pane scrollWheel:[NSEvent eventWithCGEvent:scroll]]; CFRelease(scroll);
+    checkErrorPosition(@"scroll-anchor-failed",nil);
+    explain();
     SetTerminalPreference(AIErrorExplanations,NO); respond(@"DISABLED-DIAGNOSIS",nil);
     assert(![pane valueForKey:@"diagnosis"] && !fixButton() && !textOnGrid(@"DISABLED-DIAGNOSIS") && !session.tracksCommands);
     SetTerminalPreference(AIErrorExplanations,YES);

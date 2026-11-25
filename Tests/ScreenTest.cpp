@@ -57,9 +57,31 @@ static void checkAgentFrames() {
     for (int y=0;y<s.height;++y) assert(!s.row(y).agentStamp);
 }
 
+static void checkFailureAnchor() {
+    Screen screen(16,4);
+    screen.feed("bad 路径!\r\n");
+    screen.failureCell={0,8};
+    auto anchored=[&] {
+        TextPoint p=screen.failureCell;
+        return p.row>=0 && p.column<(int)screen.lineAt(p.row).size() && screen.lineAt(p.row)[p.column].ch=='!';
+    };
+    assert(anchored());
+    screen.resize(5,4); assert(anchored());
+    screen.resize(12,3); assert(anchored());
+    screen.feed("\033[?1049hother"); screen.resize(4,3); screen.feed("\033[?1049l"); assert(anchored());
+    screen.setHistoryLimit(1);
+    for (int i=0;i<40;++i) screen.feed("x\r\n");
+    assert(screen.archivedRows()>1 && anchored());
+    screen.clearHistory(); assert(screen.failureCell.row<0);
+    screen.setHistoryLimit(0); screen.feed("\033[2J\033[H\r\n!"); screen.failureCell={1,0};
+    screen.feed("\033[1S"); assert(screen.failureCell.row==0 && anchored());
+    screen.feed("\033[1S"); assert(screen.failureCell.row<0);
+}
+
 int main() {
     setlocale(LC_CTYPE,"en_US.UTF-8");
     checkFreeze();
+    checkFailureAnchor();
     checkAgentFrames();
     Screen s(6,3);
     s.feed("abc\033[2D!"); assert(s.row(0)[1].ch == '!');

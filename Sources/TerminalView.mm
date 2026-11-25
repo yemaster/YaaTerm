@@ -41,8 +41,12 @@ static void appendScalar(std::vector<unichar> &s, char32_t c) {
     if (c > 0xffff) { c -= 0x10000; s.push_back(0xd800+(c>>10)); s.push_back(0xdc00+(c&1023)); }
     else s.push_back((unichar)c);
 }
+static int textEnd(const Row &row, int start, int end) {
+    while (end>start && row[end-1].ch==U' ' && !row[end-1].mark) --end;
+    return end;
+}
 static NSString *cellText(const Row &row, int start, int end, bool trim) {
-    if (trim) while (end > start && row[end-1].ch == U' ' && !row[end-1].mark) --end;
+    if (trim) end=textEnd(row,start,end);
     if (start == end) return @"";
     std::vector<unichar> units;
     units.reserve(end-start);
@@ -98,6 +102,8 @@ enum FixState { ExplainError, AnalyzingError, SendingExplanation, ShowExplanatio
     NSProgressIndicator *_agentProgress;
     NSDictionary *_agentResult;
     NSButton *_fixButton;
+    CGFloat _fixLabelWidth;
+    Cell _failureGlyph;
     NSDictionary *_failure;
     TerminalAssistant *_diagnosis;
     NSString *_explanation, *_suggestion;
@@ -618,6 +624,7 @@ struct PaintedLine {
 - (void)clearFailure {
     [_diagnosis cancel]; _diagnosis=nil;
     if (_fixState==SendingExplanation) [_session discardPendingLine];
+    _screen->failureCell={-1,0};
     _fixState=ExplainError; _explanation=nil; _suggestion=nil; _failure=nil; [_fixButton removeFromSuperview]; _fixButton=nil;
 }
 - (BOOL)hasFailedCommand { return _failure!=nil; }
@@ -639,6 +646,7 @@ struct PaintedLine {
     NSString *command=awaiting ? _assistant.expectedCommand :
         [[NSString alloc] initWithBytes:line.data() length:line.size() encoding:NSUTF8StringEncoding] ?: @"";
     NSMutableArray *rows=[NSMutableArray array];
+    TextPoint anchor{-1,0};
     if ((awaiting && outputStamp) || _commandGeneration==_screen->historyGeneration) {
         int64_t end=_screen->historySize()+_screen->y();
         int64_t start=awaiting && outputStamp ? 0 : _commandRow;
@@ -651,7 +659,9 @@ struct PaintedLine {
             }
             int last=index==end ? std::min(_screen->x(),(int)row.size()) : std::min(row.written,(int)row.size());
             int first=_commandGeneration==_screen->historyGeneration && index==_commandRow && !outputStamp ? std::min(last,_commandColumn) : 0;
-            NSString *text=cellText(row,first,last,true);
+            last=textEnd(row,first,last);
+            if (failed && anchor.row<0 && last>first) anchor={index,last-1};
+            NSString *text=cellText(row,first,last,false);
             if (row.wrapAt==0 && rows.count) text=[text stringByAppendingString:@"\n"];
             if (text.length) { [rows addObject:text]; used+=text.length; }
         }
@@ -664,7 +674,23 @@ struct PaintedLine {
     NSDictionary *record=@{@"command":command,@"status":@(status),@"output":output};
     if (awaiting) _agentResult=record; // Deliver after the same zsh prompt is ready for the next step.
     if (failed && command.length) {
-        _failure=record;
+        // A silent failure belongs to the echoed command. The start may have scrolled
+        // away with history disabled, or moved when the user resized the pane.
+        if (anchor.row<0) {
+            int64_t cursor=_screen->historySize()+_screen->y();
+            for (int64_t index=cursor; index>=std::max<int64_t>(0,cursor-24); --index) {
+                const Row &row=_screen->lineAt(index);
+                int limit=index==cursor ? _screen->x() : row.written;
+                int end=textEnd(row,0,std::min(limit,(int)row.size()));
+                if (end) { anchor={index,end-1}; break; }
+            }
+        }
+        if (anchor.row>=0) {
+            const Row &row=_screen->lineAt(anchor.row);
+            if (anchor.column>0 && !row[anchor.column].width) --anchor.column;
+            _failureGlyph=row[anchor.column];
+        }
+        _screen->failureCell=anchor; _failure=record;
         [self setFixState:ExplainError];
     }
 }
@@ -690,21 +716,62 @@ struct PaintedLine {
     _fixButton.toolTip=state==AnalyzingError ? @"取消分析（⌘⇧E）" : [titles[state] stringByAppendingString:@"（⌘⇧E）"];
     [_fixButton setAccessibilityLabel:_fixButton.toolTip];
     _fixButton.enabled=state!=SendingExplanation;
-    [_fixButton sizeToFit]; [self positionFixButton];
+    _fixButton.imagePosition=NSImageLeading;
+    [_fixButton sizeToFit]; _fixLabelWidth=NSWidth(_fixButton.frame);
+    [self positionFixButton];
+}
+// Scrollback can present a single stored row as several visible fragments.
+- (int)displayRowForCell:(TextPoint)cell localColumn:(int *)column {
+    if (cell.row<0 || cell.row>=_screen->historySize()+_screen->height) return -1;
+    if (!_offset) {
+        *column=cell.column;
+        int64_t y=cell.row-_screen->historySize();
+        return y>=0 ? (int)y : -1;
+    }
+    TextPoint top=[self displayPoint:0];
+    if (cell.row<top.row || cell.row>=top.row+_screen->height) return -1;
+    int fragment=fragmentStart(_screen->lineAt(cell.row),cell.column,_screen->cols);
+    for (int y=0; y<_screen->height; ++y) {
+        TextPoint p=[self displayPoint:y];
+        if (p.row>cell.row || (p.row==cell.row && p.column>fragment)) break;
+        if (p.row==cell.row && p.column==fragment) {
+            *column=cell.column-fragment; return y;
+        }
+    }
+    return -1;
 }
 - (void)positionFixButton {
     if (!_fixButton) return;
-    // Use empty cells next to the output. Leave a full line of text or a right prompt unobstructed.
-    if (!_wakeOnActivity && !_offset && !_screen->alternate && !_assistant && !_ended) {
-        CGFloat right=NSWidth(self.bounds)-insetX, width=NSWidth(_fixButton.frame);
-        int cursor=_screen->y();
-        bool copy=_fixState==CopySuggestion;
-        for (int row : {copy ? cursor : cursor-1,copy ? cursor-1 : cursor,cursor+1}) {
-            if (row<0 || row>=_screen->height) continue;
-            CGFloat occupied=MAX(_screen->row(row).written,row==cursor ? _screen->x()+1 : 0)*_cw;
-            if (insetX+occupied+8>right-width) continue;
-            NSRect frame=NSMakeRect(floor(right-width),floor([self topOfRow:row]),width,_lh);
-            if (_findBar && NSIntersectsRect(frame,_findBar.frame)) continue;
+    int col=0, y=-1;
+    if (!_wakeOnActivity && !_screen->alternate && !_assistant && !_ended && _offset<=_screen->historySize()) {
+        if (_fixState==CopySuggestion) {
+            if (!_offset) {
+                y=_screen->y(); const Row &row=_screen->row(y);
+                col=std::max(textEnd(row,0,row.written),_screen->x()+1);
+            }
+        } else {
+            y=[self displayRowForCell:_screen->failureCell localColumn:&col];
+            if (y>=0) {
+                const Row &row=[self displayRow:y];
+                if (col>=(int)row.size() || row[col].ch!=_failureGlyph.ch ||
+                    row[col].mark!=_failureGlyph.mark || row[col].width!=_failureGlyph.width) y=-1;
+                else {
+                    col+=row[col].width;
+                    // If another writer filled the rest of the line, use its gutter.
+                    if (textEnd(row,0,row.written)>col || (!_offset && y==_screen->y() && _screen->x()>=col)) col=-1;
+                }
+            }
+        }
+    }
+    if (y>=0) {
+        CGFloat end=insetX+col*_cw, right=NSWidth(self.bounds);
+        bool compact=col<0 || end+6+_fixLabelWidth>right-2;
+        CGFloat width=compact ? insetX : _fixLabelWidth;
+        CGFloat x=col<0 || end+width>right ? 0 : MIN(end+6,right-width);
+        NSRect frame=NSMakeRect(floor(x),floor([self topOfRow:y]),width,_lh);
+        if (!_findBar || !NSIntersectsRect(frame,_findBar.frame)) {
+            NSCellImagePosition position=compact ? NSImageOnly : NSImageLeading;
+            if (_fixButton.imagePosition!=position) _fixButton.imagePosition=position;
             if (!NSEqualRects(frame,_fixButton.frame)) _fixButton.frame=frame;
             _fixButton.hidden=NO; return;
         }
@@ -888,7 +955,8 @@ struct PaintedLine {
     __weak TerminalView *weak=self;
     _diagnosis.onDiagnosis=^(NSString *text, NSString *command, DiagnosisFollowUp followUp) {
         TerminalView *pane=weak; if (!pane) return;
-        pane->_explanation=text.length ? text : @"可尝试下面的命令。";
+        NSString *reason=[text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        pane->_explanation=reason.length ? reason : @"可尝试下面的命令。";
         pane->_suggestion=command; pane->_followUp=followUp; pane->_diagnosis=nil;
         [pane deliverExplanation];
     };

@@ -2,7 +2,6 @@
 #include "Screen.hpp"
 
 namespace yaa {
-struct TextPoint { int64_t row = 0; int column = 0; };
 struct TextMatch { TextPoint first, last; }; // Inclusive cells, in display order.
 
 // A resumable scan. Memory depends on the query length, never the number of hits.

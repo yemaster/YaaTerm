@@ -9,7 +9,11 @@ BUFFER='' CURSOR=0 PREDISPLAY='' POSTDISPLAY=''
     zle -I
 }
 BUFFER=$draft CURSOR=$caret MARK=$mark REGION_ACTIVE=$selection PREDISPLAY=$before POSTDISPLAY=$after
-builtin printf '\033[1;34m错误解释\033[0m  %s\n' "${reason%$'\n'}" > "$TTY"
+# ZLE left a blank editor row above us. Put the separation below the reason.
+if (( LINES >= 3 )) && [[ ! -o singlelinezle && $TERM != dumb ]]; then
+    builtin printf '\033[1A\r' > "$TTY"
+fi
+builtin printf '\033[1;34m错误解释\033[0m  %s\n\n' "${reason%$'\n'}" > "$TTY"
 if [[ -n $line && $line != *[[:cntrl:]]* ]]; then
     if [[ -z $BUFFER ]]; then
         BUFFER=$line CURSOR=${#line}
