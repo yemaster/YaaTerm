@@ -62,6 +62,13 @@ static void checkTerminalKeys() {
 - (BOOL)allowsSelectionMotion { return self.motionEnabled; }
 @end
 
+@interface MotionTestPresenter : TaskNoticePresenter
+@property BOOL motionEnabled;
+@end
+@implementation MotionTestPresenter
+- (BOOL)allowsBannerMotion { return self.motionEnabled; }
+@end
+
 static void checkSelectionMotion() {
     MotionTestBar *bar = [[MotionTestBar alloc] initWithFrame:NSMakeRect(0,0,640,40)];
     bar.motionEnabled = YES;
@@ -1012,19 +1019,34 @@ static void checkTransfers() {
     assert(empty && !source.count && target.showingSettings);
     [target closePane]; assert(!target.showingSettings && target.focused==right);
     [target selectIndex:0]; [target showSettings];
-    TaskNoticePresenter *presenter = [TaskNoticePresenter new];
+    MotionTestPresenter *presenter = [MotionTestPresenter new];
+    presenter.motionEnabled=YES;
     [presenter show:notice inContent:target top:NSHeight(target.bounds)];
     NSButton *banner = [presenter valueForKey:@"banner"];
     assert(banner.superview == target && [banner.accessibilityLabel containsString:@"claude"]);
+    auto transition=[&]() -> CAAnimationGroup *{ return (CAAnimationGroup *)[banner.layer animationForKey:@"noticeMotion"]; };
+    assert(transition().animations.count==2 && banner.alphaValue==1);
     NSTimer *timer=[presenter valueForKey:@"dismissal"];
     [presenter show:notice inContent:target top:NSHeight(target.bounds)];
     assert(!timer.valid && [presenter valueForKey:@"banner"]==banner);
     NSTableCellView *cell=(NSTableCellView *)banner.subviews.firstObject;
     [banner layoutSubtreeIfNeeded];
     assert(cell.imageView.image && [cell.textField.stringValue isEqual:notice.title]);
+    [[presenter valueForKey:@"dismissal"] fire];
+    assert(!banner.enabled && ![banner hitTest:banner.frame.origin] && transition().animations.count==2);
+    [presenter show:notice inContent:target top:NSHeight(target.bounds)];
+    [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.24]];
+    assert(banner.enabled && banner.superview==target && [presenter valueForKey:@"banner"]==banner);
     applyControl(banner);
-    assert(!banner.superview && ![presenter valueForKey:@"dismissal"]);
+    assert(!banner.enabled && ![presenter valueForKey:@"dismissal"]);
     assert(target.selectedIndex==1 && target.focused==left && !target.showingSettings && !TaskNotice.unreadCount);
+    waitUntil(^BOOL{ return !banner.superview && ![presenter valueForKey:@"banner"]; });
+    presenter.motionEnabled=NO;
+    [presenter show:notice inContent:target top:NSHeight(target.bounds)];
+    NSButton *still=[presenter valueForKey:@"banner"];
+    assert(![still.layer animationForKey:@"noticeMotion"] && still.enabled);
+    [[presenter valueForKey:@"dismissal"] fire];
+    assert(!still.superview && ![presenter valueForKey:@"banner"]);
     exitShell(right); waitUntil(^BOOL{ return target.focused==left; });
     [target selectIndex:0]; assert(target.focused==original);
     exitShell(left); waitUntil(^BOOL{ return target.count==1; });

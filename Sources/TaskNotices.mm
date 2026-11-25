@@ -186,7 +186,7 @@ static NSTextField *noticeLabel(CGFloat size, NSFontWeight weight, NSColor *colo
     frame.origin.x=NSMaxX(bounds)-frame.size.width-12;
     self.frame=frame;
 }
-- (NSView *)hitTest:(NSPoint)point { return [super hitTest:point] ? self : nil; }
+- (NSView *)hitTest:(NSPoint)point { return self.enabled && [super hitTest:point] ? self : nil; }
 - (BOOL)wantsUpdateLayer { return YES; }
 - (void)updateLayer {
     CALayer *layer=self.layer;
@@ -294,13 +294,50 @@ static NSTextField *noticeLabel(CGFloat size, NSFontWeight weight, NSColor *colo
     NSPopover *_popover;
     NoticeBanner *_banner;
     NSTimer *_dismissal;
+    NSUInteger _transition;
+}
+- (BOOL)allowsBannerMotion { return _banner.window.visible && TabAnimationsEnabled(); }
+- (void)showBannerLayer:(BOOL)visible completion:(dispatch_block_t)completion {
+    CALayer *layer=_banner.layer;
+    CAAnimation *previous=[layer animationForKey:@"noticeMotion"];
+    CALayer *current=previous ? layer.presentationLayer : nil;
+    CGFloat alpha=current ? current.opacity : (visible ? 0 : 1);
+    CGFloat offset=current ? current.transform.m41 : (visible ? 10 : 0);
+    _banner.alphaValue=visible ? 1 : 0;
+    if (![self allowsBannerMotion]) {
+        [layer removeAnimationForKey:@"noticeMotion"];
+        if (completion) completion();
+        return;
+    }
+    CABasicAnimation *fade=[CABasicAnimation animationWithKeyPath:@"opacity"];
+    fade.fromValue=@(alpha); fade.toValue=@(_banner.alphaValue);
+    CABasicAnimation *slide=[CABasicAnimation animationWithKeyPath:@"transform.translation.x"];
+    slide.fromValue=@(offset); slide.toValue=visible ? @0 : @8;
+    CAAnimationGroup *motion=[CAAnimationGroup animation];
+    motion.duration=visible ? .18 : .14; fade.duration=slide.duration=motion.duration;
+    motion.animations=@[fade,slide];
+    motion.timingFunction=[CAMediaTimingFunction functionWithName:visible ? kCAMediaTimingFunctionEaseOut : kCAMediaTimingFunctionEaseIn];
+    [CATransaction begin];
+    [CATransaction setCompletionBlock:completion];
+    [layer addAnimation:motion forKey:@"noticeMotion"];
+    [CATransaction commit];
 }
 - (void)dismissBanner {
     [_dismissal invalidate]; _dismissal=nil;
-    [_banner removeFromSuperview]; _banner=nil;
+    if (!_banner.enabled) return;
+    _banner.enabled=NO; [_banner setAccessibilityElement:NO];
+    NSUInteger ticket=++_transition;
+    __weak TaskNoticePresenter *weak=self;
+    [self showBannerLayer:NO completion:^{
+        TaskNoticePresenter *owner=weak;
+        if (owner && owner->_transition==ticket) {
+            [owner->_banner removeFromSuperview]; owner->_banner=nil;
+        }
+    }];
 }
 - (void)dealloc { [_dismissal invalidate]; [_banner removeFromSuperview]; [_popover close]; }
 - (void)activateBanner:(NoticeBanner *)sender {
+    if (sender!=_banner || !sender.enabled) return;
     TaskNotice *item=sender.notice; [self dismissBanner]; [item open];
 }
 - (void)show:(TaskNotice *)notice inContent:(NSView *)content top:(CGFloat)top {
@@ -308,19 +345,22 @@ static NSTextField *noticeLabel(CGFloat size, NSFontWeight weight, NSColor *colo
     CGFloat width=MIN(noticeWidth,NSWidth(content.bounds)-24);
     if (width<=0) return;
     NSRect frame=NSMakeRect(NSMaxX(content.bounds)-width-12,top-72,width,60);
+    BOOL entering=_banner.superview!=content || !_banner.enabled;
+    ++_transition; // A replacement may arrive while the old card is fading out.
     if (_banner.superview!=content) {
-        [self dismissBanner];
+        [_banner removeFromSuperview];
         _banner=[[NoticeBanner alloc] initWithFrame:frame];
         _banner.autoresizingMask=NSViewMinXMargin|NSViewMinYMargin;
         _banner.target=self; _banner.action=@selector(activateBanner:);
         [content addSubview:_banner positioned:NSWindowAbove relativeTo:nil];
-        if (TabAnimationsEnabled()) {
-            CABasicAnimation *appear=[CABasicAnimation animationWithKeyPath:@"opacity"];
-            appear.fromValue=@0; appear.toValue=@1; appear.duration=.14;
-            [_banner.layer addAnimation:appear forKey:@"appear"];
-        }
+    }
+    _banner.enabled=YES; [_banner setAccessibilityElement:YES];
+    if (!entering && _banner.notice!=notice && [self allowsBannerMotion]) {
+        CATransition *fade=[CATransition animation]; fade.type=kCATransitionFade; fade.duration=.12;
+        [_banner.layer addAnimation:fade forKey:@"noticeContents"];
     }
     _banner.frame=frame; _banner.appearance=SchemeAppearance(PreferredColorScheme()); _banner.notice=notice;
+    if (entering) [self showBannerLayer:YES completion:nil];
     [_dismissal invalidate];
     __weak TaskNoticePresenter *weak=self;
     _dismissal=[NSTimer scheduledTimerWithTimeInterval:4.5 repeats:NO block:^(NSTimer *){ [weak dismissBanner]; }];
