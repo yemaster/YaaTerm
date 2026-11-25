@@ -189,6 +189,17 @@ _yaaterm_input_widget() {
             _yaaterm_edit_op=leave; zle .accept-line; return 0
         fi
         _yaaterm_draw_notes
+        if [[ -f $_yaaterm_ai_dir/approve ]]; then
+            local approved=$(<"$_yaaterm_ai_dir/approve")
+            zf_rm -f -- "$_yaaterm_ai_dir/approve"
+            if [[ -n ${_yaaterm_review_id-} && $approved == $_yaaterm_review_id && -n ${_yaaterm_task_active-} ]]; then
+                _yaaterm_next_id=$approved _yaaterm_edit_op=run
+                BUFFER=$_yaaterm_review_line CURSOR=${#_yaaterm_review_line} POSTDISPLAY=''
+                zle -R
+                zle .accept-line
+            fi
+            return 0
+        fi
     elif [[ ( -r $_yaaterm_ai_dir/mode || -n ${_yaaterm_mode-} ) && $CONTEXT == start && ! -f $_yaaterm_ai_dir/line ]]; then
         if (( ! $+functions[_yaaterm_compose] )); then
             builtin source "$_yaaterm_agents_dir/../zsh/agent-input.zsh"
@@ -200,15 +211,11 @@ _yaaterm_input_widget() {
     [[ -f $_yaaterm_ai_dir/line ]] || return 0
     { IFS= builtin read -r id && IFS= builtin read -r op && IFS= builtin read -r line } < "$_yaaterm_ai_dir/line" || return 0
     zmodload -F zsh/files b:zf_rm && zf_rm -- "$_yaaterm_ai_dir/line" 2>/dev/null || return 0
-    local agent_run=0
-    [[ -n ${_yaaterm_editing-} && $op == run ]] && agent_run=1
-    if [[ ( -z $BUFFER || $agent_run == 1 ) && ( $CONTEXT == start || -n ${_yaaterm_editing-} ) && -n $line && $line != *[[:cntrl:]]* && $op == (run|fill) ]]; then
+    local review=0
+    [[ $op == review && -n ${_yaaterm_editing-} && -n ${_yaaterm_task_active-} && -z ${_yaaterm_review_id-} ]] && review=1
+    if [[ -n $line && $line != *[[:cntrl:]]* ]] &&
+       { (( review )) || [[ -z $BUFFER && -z ${_yaaterm_editing-} && $CONTEXT == start && $op == (run|fill) ]]; }; then
         ok=1
-        if (( agent_run )) && [[ -n $BUFFER ]]; then
-            typeset -g _yaaterm_agent_draft=$BUFFER _yaaterm_agent_caret=$CURSOR
-            BUFFER='' CURSOR=0
-            zle -R
-        fi
         if [[ $line == 'command yaa-agent '* ]]; then
             builtin hash "yaa-agent=$_yaaterm_agents_dir/yaa-agent"
         elif [[ $line == 'command yaa-inspect '* ]]; then
@@ -217,8 +224,13 @@ _yaaterm_input_widget() {
         BUFFER=$line CURSOR=${#line}
     fi
     builtin printf '\033]777;yaaterm-input;%s;%s;%d\007' "$_yaaterm_exit_token" "$id" "$ok" > "$TTY"
-    if (( ok )) && [[ $op == run ]]; then
-        [[ -n ${_yaaterm_editing-} ]] && _yaaterm_edit_op=run
+    if (( ok && review )); then
+        _yaaterm_review_id=$id _yaaterm_review_line=$line
+        PROMPT='$ ' POSTDISPLAY='  [Enter / Ctrl+C]'
+        zle reset-prompt
+        zle -R
+        builtin printf '\033]777;yaaterm-editor;%s;%s;review\007' "$_yaaterm_exit_token" "$id" > "$TTY"
+    elif (( ok )) && [[ $op == run ]]; then
         _yaaterm_next_id=$id
         zle -R
         zle .accept-line

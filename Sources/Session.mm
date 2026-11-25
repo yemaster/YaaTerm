@@ -200,20 +200,28 @@
     close(fd);
     return n>0 && n==info.st_size ? [[NSString alloc] initWithBytes:bytes length:n encoding:NSUTF8StringEncoding] : nil;
 }
-- (void)postAgentText:(NSString *)text wakeEditor:(BOOL)wake {
-    if (!_agentInputID || !text.length) return;
+- (BOOL)approveAgentLine:(NSString *)identifier {
+    if (!_agentInputID || !identifier || ![self shellIsForeground]) return NO;
+    NSString *path=[_controlDirectory stringByAppendingPathComponent:@"approve"];
+    if (![identifier writeToFile:path atomically:YES encoding:NSASCIIStringEncoding error:nil]) return NO;
+    [self wakeEditor]; return YES;
+}
+- (void)postAgentText:(NSString *)text finished:(BOOL)finished wakeEditor:(BOOL)wake {
+    if (!_agentInputID) return;
     // The transcript is literal text. Discard terminal controls before handing it to ZLE.
     static NSRegularExpression *controls=[NSRegularExpression regularExpressionWithPattern:@"[\\p{Cc}&&[^\\n\\t]]|\\p{Bidi_Control}" options:0 error:nil];
     text=[controls stringByReplacingMatchesInString:text options:0 range:NSMakeRange(0,text.length) withTemplate:@"�"];
     NSString *name=[NSString stringWithFormat:@"note-%@-%010lu",_agentInputID,(unsigned long)++_noteNumber];
-    if ([text writeToFile:[_controlDirectory stringByAppendingPathComponent:name] atomically:YES encoding:NSUTF8StringEncoding error:nil]
-        && wake && [self shellIsForeground]) [self wakeEditor];
+    if (text.length) [text writeToFile:[_controlDirectory stringByAppendingPathComponent:name] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    if (finished) [@"" writeToFile:[_controlDirectory stringByAppendingPathComponent:[@"done-" stringByAppendingString:_agentInputID]]
+                        atomically:YES encoding:NSASCIIStringEncoding error:nil];
+    if (wake && [self shellIsForeground]) [self wakeEditor];
 }
 - (void)endAgentInput:(BOOL)wake {
     if (!_agentInputID) return;
     unlink([_controlDirectory stringByAppendingPathComponent:@"mode"].fileSystemRepresentation);
     for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:_controlDirectory error:nil])
-        if ([name hasPrefix:@"task-"] || [name hasPrefix:@"note-"])
+        if ([name hasPrefix:@"task-"] || [name hasPrefix:@"note-"] || [name hasPrefix:@"done-"] || [name isEqual:@"approve"])
             unlink([_controlDirectory stringByAppendingPathComponent:name].fileSystemRepresentation);
     _agentInputID=nil; _earlyInput=nil; _agentReady=nil;
     if (wake && [self shellIsForeground]) [self wakeEditor];
@@ -228,6 +236,7 @@
     }
 }
 - (void)discardPendingLine {
+    if (_agentInputID) unlink([_controlDirectory stringByAppendingPathComponent:@"approve"].fileSystemRepresentation);
     if (_pendingID) unlink([_controlDirectory stringByAppendingPathComponent:@"line"].fileSystemRepresentation);
     _pendingID=nil; _acknowledgement=nil;
 }
@@ -241,7 +250,7 @@
         [line rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location!=NSNotFound ||
         [line rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location!=NSNotFound) return nil;
     NSString *identifier=NSUUID.UUID.UUIDString;
-    NSString *packet=[NSString stringWithFormat:@"%@\n%@\n%@\n",identifier,execute ? @"run" : @"fill",line];
+    NSString *packet=[NSString stringWithFormat:@"%@\n%@\n%@\n",identifier,execute ? (_agentInputID ? @"review" : @"run") : @"fill",line];
     NSString *path=[_controlDirectory stringByAppendingPathComponent:@"line"];
     if (![[packet dataUsingEncoding:NSUTF8StringEncoding] writeToFile:path options:NSDataWritingWithoutOverwriting error:nil]) return nil;
     _pendingID=identifier; _acknowledgement=[reply copy];

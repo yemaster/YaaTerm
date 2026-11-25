@@ -98,7 +98,7 @@ static NSString *cellText(const Row &row, int start, int end, bool trim) {
     int64_t _commandRow;
     int _commandColumn;
     uint64_t _commandGeneration;
-    BOOL _insideCommand, _runningOwned, _diagnostics;
+    BOOL _insideCommand, _runningOwned, _diagnostics, _awaitingApproval, _approvalSent;
     NSString *_issuedID, *_panelFeature, *_localTool;
     BOOL _tables, _webLinks, _fileLinks;
     OutputReferences *_references;
@@ -570,7 +570,7 @@ struct PaintedLine {
     __weak TerminalView *weak=self;
     _screen->commandBegan=[weak](std::string_view identifier) {
         TerminalView *v=weak; if (!v) return;
-        v->_insideCommand=YES;
+        v->_insideCommand=YES; v->_approvalSent=NO;
         v->_runningOwned=v->_issuedID && identifier==(v->_issuedID.UTF8String ?: "");
         if (v->_runningOwned) v->_screen->beginAgentOutput(); else v->_screen->endAgentBlock();
         v->_commandGeneration=v->_screen->historyGeneration;
@@ -595,7 +595,7 @@ struct PaintedLine {
     BOOL owned=_runningOwned || (!_insideCommand && _issuedID && outputStamp);
     BOOL began=_insideCommand || owned;
     _screen->endAgentBlock();
-    _insideCommand=_runningOwned=NO;
+    _insideCommand=_runningOwned=_approvalSent=NO;
     if (owned) _issuedID=nil;
     BOOL awaiting=owned && _assistant.expectedCommand!=nil;
     BOOL failed=_diagnostics && !awaiting && status && status!=130 && status!=128+SIGTSTP && !line.empty();
@@ -669,6 +669,7 @@ struct PaintedLine {
     [self updateAgentAnimation:nil];
 }
 - (void)setAgentBusy:(BOOL)busy {
+    if (busy==(_agentProgress!=nil)) return;
     if (busy) {
         _agentProgress=[[NSProgressIndicator alloc] initWithFrame:NSMakeRect(0,0,14,14)];
         _agentProgress.style=NSProgressIndicatorStyleSpinning;
@@ -729,8 +730,12 @@ struct PaintedLine {
         };
         _assistant.onStop=^{
             TerminalView *v=weak; if (!v) return;
-            [v->_session discardPendingLine]; v->_issuedID=nil;
-            if (v->_runningOwned) { [v->_session sendBytes:"\003" length:1]; v->_runningOwned=NO; }
+            [v->_session discardPendingLine];
+            if (v->_issuedID && !v->_insideCommand) { v->_screen->endAgentBlock(); v.needsDisplay=YES; }
+            v->_issuedID=nil; v->_awaitingApproval=NO;
+            if (v->_runningOwned || v->_approvalSent) {
+                [v->_session sendBytes:"\003" length:1]; v->_runningOwned=v->_approvalSent=NO;
+            }
         };
         _assistant.onComplete=^(NSString *summary, BOOL failed) {
             TerminalView *v=weak; if (v.agentFinished) v.agentFinished(v,v->_localTool ?: @"Agent",failed,summary);
@@ -741,11 +746,17 @@ struct PaintedLine {
             _assistant.onActivity=^(BOOL busy) { [weak setAgentBusy:busy]; };
             _assistant.onTranscript=^(NSString *text) {
                 TerminalView *v=weak;
-                if (v) [v->_session postAgentText:text wakeEditor:!v->_insideCommand && v->_screen->bracketPaste && !v->_screen->alternate];
+                if (v) [v->_session postAgentText:text finished:!v->_assistant.busy wakeEditor:!v->_insideCommand && v->_screen->bracketPaste && !v->_screen->alternate];
             };
             _screen->agentEditor=[weak](std::string_view bytes,std::string_view event) {
                 TerminalView *v=weak; if (!v) return;
                 NSString *identifier=[[NSString alloc] initWithBytes:bytes.data() length:bytes.size() encoding:NSASCIIStringEncoding];
+                if (event=="review") {
+                    if ([v->_issuedID isEqual:identifier] && v->_assistant.expectedCommand) {
+                        v->_awaitingApproval=YES; [v setAgentBusy:NO];
+                    }
+                    return;
+                }
                 if (![v->_session.agentInputID isEqual:identifier]) return;
                 if (event=="ready") {
                     [v->_session agentInputReady:identifier];
@@ -754,6 +765,9 @@ struct PaintedLine {
                 } else if (event=="task") {
                     NSString *task=[v->_session takeAgentTask:identifier];
                     if (task) [v->_assistant submitTask:task];
+                    else [v->_session postAgentText:@"未能读取任务，请重试。" finished:YES wakeEditor:YES];
+                } else if (event=="cancel") {
+                    if (v->_assistant.busy) [v->_assistant submitTask:@"/stop"];
                 } else dispatch_async(dispatch_get_main_queue(),^{
                     if ([v->_session.agentInputID isEqual:identifier]) [v closeAssistant];
                 });
@@ -1325,7 +1339,17 @@ struct PaintedLine {
     [NSPasteboard.generalPasteboard clearContents];
     [NSPasteboard.generalPasteboard setString:text forType:NSPasteboardTypeString];
 }
+- (BOOL)agentOwnsEditor {
+    return _assistant.busy && _session.agentInputID && !_insideCommand && !_screen->alternate;
+}
+- (void)approveAgentCommand {
+    if (_awaitingApproval && [_session approveAgentLine:_issuedID]) {
+        _awaitingApproval=NO; _approvalSent=YES;
+        [self setAgentBusy:YES];
+    }
+}
 - (void)sendString:(NSString *)str {
+    if ([self agentOwnsEditor]) return;
     if (_offset || _anchor != -1) { _offset = 0; _topColumn = 0; _visibleRows.clear(); _anchor = _extent = -1; self.needsDisplay = YES; }
     [_session send:[str dataUsingEncoding:NSUTF8StringEncoding]];
 }
@@ -1484,6 +1508,14 @@ struct PaintedLine {
         [self showFind:nil]; return;
     }
     if (event.modifierFlags & NSEventModifierFlagCommand) { [super keyDown:event]; return; }
+    if (_assistant.busy && _session.agentInputID && modifiers==NSEventModifierFlagControl &&
+        [event.charactersIgnoringModifiers.lowercaseString isEqual:@"c"]) {
+        [self unmarkText]; [_assistant submitTask:@"/stop"]; return;
+    }
+    if ([self agentOwnsEditor]) {
+        if (!event.isARepeat && !modifiers && (event.keyCode==36 || event.keyCode==76)) [self approveAgentCommand];
+        return;
+    }
     if (!_marked.length) {
         NSString *seq = nil;
         switch (event.keyCode) {
@@ -1531,6 +1563,7 @@ struct PaintedLine {
     [self unmarkText]; [self sendString:[str isKindOfClass:NSAttributedString.class] ? [str string] : str];
 }
 - (void)setMarkedText:(id)s selectedRange:(NSRange)selection replacementRange:(NSRange)r {
+    if ([self agentOwnsEditor]) return;
     _marked = [[s isKindOfClass:NSAttributedString.class] ? [s string] : s copy];
     _markedSelection = selection; self.needsDisplay = YES;
 }
@@ -1547,7 +1580,8 @@ struct PaintedLine {
     return [self.window convertRectToScreen:[self convertRect:caret toView:nil]];
 }
 - (void)doCommandBySelector:(SEL)selector {
-    if (selector == @selector(insertNewline:)) [self sendString:@"\r"];
+    if (selector == @selector(insertNewline:) && [self agentOwnsEditor]) [self approveAgentCommand];
+    else if (selector == @selector(insertNewline:)) [self sendString:@"\r"];
     else if (selector == @selector(deleteBackward:)) [self sendString:@"\177"];
     else if (selector == @selector(insertTab:)) [self sendString:@"\t"];
     else if (selector == @selector(cancelOperation:)) [self sendString:@"\033"];

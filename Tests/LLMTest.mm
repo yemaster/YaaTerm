@@ -290,10 +290,8 @@ static void checkAssistant() {
     __block NSString *transcript=nil;
     panel.onTranscript=^(NSString *line){ transcript=line; };
     [panel submitTask:@"核对文件"];
-    waitFor(^BOOL{ return [transcript containsString:@"/run"]; });
-    assert(!proposals && !completed && [transcript containsString:@"wc -l sample.txt"]);
-    assert(!panel.diagnosisView);
-    [panel submitTask:@"/run"]; assert(proposals==1 && panel.expectedCommand);
+    waitFor(^BOOL{ return proposals==1; });
+    assert(!completed && !panel.diagnosisView && [panel.expectedCommand isEqual:@"wc -l sample.txt"]);
     [panel receivedResult:@{@"command":panel.expectedCommand,@"status":@0,@"output":@"1 sample.txt"}];
     waitFor(^BOOL{ return completed; }); assert(!panel.expectedCommand);
     scriptedReply=^NSDictionary *(NSDictionary *body) {

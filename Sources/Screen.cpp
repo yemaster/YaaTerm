@@ -678,7 +678,7 @@ void Screen::finishOSC() {
         }
         if (event=="yaaterm-editor") {
             auto id=take(';');
-            if (!alternate && agentEditor && id.size()==36 && (data=="ready" || data=="task" || data=="closed"))
+            if (!alternate && agentEditor && id.size()==36 && (data=="ready" || data=="task" || data=="cancel" || data=="review" || data=="closed"))
                 agentEditor(id,data);
             return;
         }

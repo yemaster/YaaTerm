@@ -9,7 +9,8 @@
 - (void)agentInputReady:(NSString *)identifier;
 - (NSString *)takeAgentTask:(NSString *)identifier;
 - (void)endAgentInput:(BOOL)wakeEditor;
-- (void)postAgentText:(NSString *)text wakeEditor:(BOOL)wake;
+- (void)postAgentText:(NSString *)text finished:(BOOL)finished wakeEditor:(BOOL)wake;
+- (BOOL)approveAgentLine:(NSString *)identifier;
 - (NSString *)submitLine:(NSString *)line execute:(BOOL)execute acknowledged:(void (^)(BOOL))reply;
 - (void)acknowledgeLine:(NSString *)identifier accepted:(BOOL)accepted;
 - (void)discardPendingLine;

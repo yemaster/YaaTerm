@@ -8,7 +8,7 @@ static NSString *const instructions =
     @"You are YaaTerm's macOS terminal assistant. Reply in the user's language, concisely. "
      "Return one JSON object with text (plain text) and optionally command (one editable shell line). "
      "In diagnose mode explain the actual error and propose a correction only if justified. "
-     "In agent mode work towards the goal. To inspect the working directory or a project text file, "
+     "In agent mode perform requested terminal actions by proposing a command, wait for its actual output, and continue. Never merely describe commands when the user asks you to run them. To inspect a project text file or subdirectory, "
      "return {\"action\":\"list\" or \"read\",\"path\":\"relative path\"}. Use . for the current directory. "
      "Use only the files required by the request. These tools execute in the current terminal. Read each shell result in steps.output. For other operations propose one command at a time. "
      "A suggestion has not run until you receive a shell result. Finish with text alone. "
@@ -23,12 +23,6 @@ static NSString *bounded(NSString *text, NSUInteger limit) {
 // Single-quote one literal argument for the user's zsh, including embedded apostrophes.
 static NSString *shellArgument(NSString *value) {
     return [NSString stringWithFormat:@"'%@'",[value stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"]];
-}
-static NSString *automaticCommand(NSString *command) {
-    // Exact operations, with fixed executables and arguments. Shell syntax never enters this path.
-    static NSDictionary *commands=@{@"pwd":@"/bin/pwd",@"ls":@"/bin/ls",@"ls -l":@"/bin/ls -l",
-        @"ls -lh":@"/bin/ls -lh",@"ls -la":@"/bin/ls -la",@"uname -m":@"/usr/bin/uname -m",@"date":@"/bin/date"};
-    return commands[command];
 }
 static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL action) {
     NSButton *button = [NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:symbol accessibilityDescription:name]
@@ -123,6 +117,10 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
 }
 @end
 
+@interface TerminalAssistant ()
+@property (nonatomic, readwrite) BOOL busy;
+@end
+
 @implementation TerminalAssistant {
     DiagnosisView *_diagnosis;
     NSString *_directory, *_shell, *_goal, *_command, *_expectedCommand, *_pendingFill;
@@ -148,6 +146,7 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
 - (void)refreshAppearance { [_diagnosis refreshAppearance]; }
 - (CGFloat)heightForWidth:(CGFloat)width { return [_diagnosis heightForWidth:width]; }
 - (NSString *)expectedCommand { return _expectedCommand; }
+- (BOOL)busy { return _busy; }
 - (void)setBusy:(BOOL)busy {
     if (_busy == busy) return;
     _busy = busy;
@@ -161,8 +160,7 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
         if (command.length) [lines addObject:command];
         if (_needsConfiguration) [lines addObject:@"输入 /settings 配置 AI 服务"];
         else if (_retry) [lines addObject:@"输入 /retry 重试"];
-        else if (command.length) [lines addObject:@"输入 /run 运行"];
-        if (lines.count && _onTranscript) _onTranscript([lines componentsJoinedByString:@"\n"]);
+        if ((lines.count || !_busy) && _onTranscript) _onTranscript([lines componentsJoinedByString:@"\n"]);
         return;
     }
     NSString *action=nil;
@@ -183,11 +181,10 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
     if (_diagnosis) return;
     if ([goal isEqual:@"/exit"]) { if (_onClose) _onClose(); return; }
     if ([goal isEqual:@"/stop"]) { [self cancel]; _needsConfiguration=_retry=NO; [self show:@"已停止" command:nil]; return; }
-    if (_busy) { if (_onTranscript) _onTranscript(@"任务执行中，输入 /stop 停止"); return; }
-    if ([_command length] && [goal isEqual:@"/run"]) { [self performAction:nil]; return; }
+    if (_busy) return;
     if (_retry && [goal isEqual:@"/retry"]) { [self performAction:nil]; return; }
     if (_needsConfiguration && [goal isEqual:@"/settings"]) { [self performAction:nil]; return; }
-    if (!goal.length) return;
+    if (!goal.length) { [self show:nil command:nil]; return; }
     if (![_shell isEqual:@"zsh"]) { [self show:@"请在 zsh 分屏中运行 Agent。" command:nil]; return; }
     if (goal.length>4000) { [self show:@"任务描述超过 4000 字。" command:nil]; return; }
     if (_localTool) {
@@ -268,8 +265,7 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
     if (command.length>384 || [command rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location!=NSNotFound ||
         [command rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location!=NSNotFound) command=nil;
     if (!_failure && command.length) {
-        NSString *automatic=automaticCommand(command);
-        if (automatic) { [self runLine:automatic]; return; }
+        [self runLine:command]; return;
     }
     self.busy=NO;
     if (!text.length && !command.length) text=result ? @"模型未给出可用建议。" : bounded(reply,5000);
@@ -310,9 +306,8 @@ static NSButton *iconButton(NSString *symbol, NSString *name, id target, SEL act
         return;
     }
     if (accepted) return;
-    NSString *command=_expectedCommand;
     _expectedCommand=nil; self.busy=NO;
-    [self show:@"当前提示符正在使用。" command:command];
+    [self show:@"当前终端无法接收命令。" command:nil];
 }
 - (void)receivedResult:(NSDictionary *)result {
     if (!_expectedCommand) return;
