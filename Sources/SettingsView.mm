@@ -55,7 +55,8 @@ NSString *SettingsSectionTitle(NSInteger section) { return @[@"通用",@"外观"
 enum SettingID : NSInteger {
     EndedSession, History, TabMotion, CommandAlerts, Mode, FontFamily, FontWeight, FontSize, LightTheme, DarkTheme, Material,
     BackOpacity, WallpaperFile, ImageOpacity, APIFormat, APIEndpoint, APIKey, APIModel, APIActions, IdleSleep, Tables, WebLinks, FileLinks,
-    AppVersion, AutoCheck, AutoInstall, CheckNow, Repository, Feedback, ReleaseNotes, ErrorHelp, AgentInput, LocalLauncher, SettingCount
+    AppVersion, AutoCheck, AutoInstall, CheckNow, Repository, Feedback, ReleaseNotes, ErrorHelp, AgentInput, LocalLauncher,
+    PromptColor, FramePadding, StreamReplies, SettingCount
 };
 struct SettingInfo { SettingsSection section; NSString *key, *name, *group, *help; };
 static const SettingInfo &setting(SettingID index) {
@@ -92,7 +93,10 @@ static const SettingInfo &setting(SettingID index) {
         {AboutSection,@"ReleaseNotes",@"更新日志",@"版本记录",nil},
         {APISection,AIErrorExplanations,@"命令错误解释",@"终端功能",nil},
         {APISection,BuiltInAgent,@"内置 Agent",@"终端功能",nil},
-        {APISection,LocalAgentLauncher,@"本机 Agent",@"终端功能",nil}
+        {APISection,LocalAgentLauncher,@"本机 Agent",@"终端功能",nil},
+        {APISection,AgentPromptColor,@"Agent 提示符颜色",@"Agent 显示",nil},
+        {APISection,AgentFramePadding,@"执行框内边距",@"Agent 显示",nil},
+        {APISection,AgentStreamReplies,@"流式显示回复",@"Agent 显示",nil}
     };
     return entries[index];
 }
@@ -490,6 +494,7 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     NSSearchField *_search;
     BOOL _showingResults;
     NSSegmentedControl *_mode, *_material;
+    NSPopUpButton *_promptColors;
     FontFamilyPicker *_fontFamily;
     ThemeGallery *_light, *_dark;
     WallpaperPicker *_wallpaper;
@@ -614,6 +619,7 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     for (NSView *view in _page.subviews.copy) [view removeFromSuperview];
     [_fields removeAllObjects]; [_labels removeAllObjects]; [_hints removeAllObjects]; [_groupHeadings removeAllObjects];
     _page.emptyMessage = nil; _lastGroup = nil;
+    _promptColors = nil;
     _light = nil; _dark = nil; _mode = nil; _material = nil; _fontFamily = nil; _wallpaper = nil; _opacity = nil; _imageOpacity = nil;
 }
 - (void)addUpdateControls {
@@ -699,6 +705,17 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
         [alerts sizeToFit]; [alerts selectItemWithTag:[TerminalPreferences() integerForKey:CommandNoticesKey]];
     } else if (section == APISection) {
         [self addSwitch:ErrorHelp]; [self addSwitch:AgentInput]; [self addSwitch:LocalLauncher];
+        if ([TerminalPreferences() boolForKey:BuiltInAgent] || [TerminalPreferences() boolForKey:LocalAgentLauncher]) {
+            _promptColors = [self picker:PromptColor];
+            [_promptColors addItemsWithTitles:@[@"红色",@"绿色",@"黄色",@"蓝色",@"紫色",@"青色"]];
+            for (NSInteger i=0; i<_promptColors.numberOfItems; ++i) [_promptColors itemAtIndex:i].tag = i+1;
+            [_promptColors selectItemWithTag:PreferredAgentPromptColor()];
+            NSPopUpButton *padding = [self picker:FramePadding];
+            [padding addItemsWithTitles:@[@"无",@"标准",@"宽松"]];
+            [padding itemAtIndex:0].tag = 0; [padding itemAtIndex:1].tag = 6; [padding itemAtIndex:2].tag = 10;
+            [padding selectItemWithTag:PreferredAgentFramePadding()];
+            [self addSwitch:StreamReplies];
+        }
         if (![TerminalPreferences() boolForKey:AIErrorExplanations] && ![TerminalPreferences() boolForKey:BuiltInAgent]) {
             _apiForm = nil; [self finishPage]; return;
         }
@@ -739,6 +756,7 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     BOOL modelSettings=[TerminalPreferences() boolForKey:AIErrorExplanations] || [TerminalPreferences() boolForKey:BuiltInAgent];
     for (NSInteger i=0; i<SettingCount; ++i) {
         if (!modelSettings && i>=APIFormat && i<=APIActions) continue;
+        if (i>=PromptColor && ![TerminalPreferences() boolForKey:BuiltInAgent] && ![TerminalPreferences() boolForKey:LocalAgentLauncher]) continue;
         const auto &info = setting((SettingID)i);
         if (!info.name.length) continue;
         NSString *section = SettingsSectionTitle(info.section);
@@ -798,6 +816,8 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     for (NSView *field in _fields) if ([field isKindOfClass:SettingResult.class])
         ((NSButton *)field).image = symbol(@"chevron.forward",colors.secondaryText);
     _heading.textColor = colors.text; [_apiForm applyPalette];
+    for (NSMenuItem *item in _promptColors.itemArray)
+        item.image = symbol(@"circle.fill", TerminalIndexedColor(PreferredColorScheme(),(int)item.tag));
     for (NSTextField *group in _groupHeadings.objectEnumerator) group.textColor = colors.secondaryText;
     for (NSTextField *label in _labels) label.textColor = colors.text;
     for (SectionButton *button : _sections) {
@@ -819,9 +839,12 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
 }
 - (void)preferenceChanged:(NSNotification *)note {
     NSString *key = note.object;
-    if ([key isEqual:AIErrorExplanations] || [key isEqual:BuiltInAgent]) {
+    if ([key isEqual:AIErrorExplanations] || [key isEqual:BuiltInAgent] || [key isEqual:LocalAgentLauncher]) {
         BOOL show = [TerminalPreferences() boolForKey:AIErrorExplanations] || [TerminalPreferences() boolForKey:BuiltInAgent];
-        if (_selection==APISection && !_showingResults && show!=(_apiForm!=nil)) { [self displaySection:APISection]; return; }
+        BOOL showColor=[TerminalPreferences() boolForKey:BuiltInAgent] || [TerminalPreferences() boolForKey:LocalAgentLauncher];
+        if (_selection==APISection && !_showingResults && (show!=(_apiForm!=nil) || showColor!=(_promptColors!=nil))) {
+            [self displaySection:APISection]; return;
+        }
         if (!show) { [_apiForm cancelTest]; _apiForm=nil; }
         if (_showingResults) { [self searchChanged:_search]; return; }
     }

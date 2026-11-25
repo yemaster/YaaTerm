@@ -56,14 +56,25 @@ static void waitFor(BOOL (^done)(void)) {
 @end
 static NSInteger httpCode;
 static NSData *replyData;
+static NSArray<NSData *> *streamChunks;
 static NSDictionary *(^scriptedReply)(NSDictionary *request);
 @implementation FixtureProtocol
 + (BOOL)canInitWithRequest:(NSURLRequest *)request { return [request.URL.host isEqual:@"fixture.invalid"]; }
 + (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request { return request; }
 - (void)startLoading {
     NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:httpCode
-        HTTPVersion:@"HTTP/1.1" headerFields:@{@"Content-Type":@"application/json"}];
+        HTTPVersion:@"HTTP/1.1" headerFields:@{@"Content-Type":streamChunks ? @"text/event-stream; charset=utf-8" : @"application/json"}];
     [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+    if (streamChunks) {
+        NSArray *chunks=streamChunks;
+        for (NSData *chunk in [chunks subarrayWithRange:NSMakeRange(0,chunks.count-1)])
+            [self.client URLProtocol:self didLoadData:chunk];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,110*NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+            [self.client URLProtocol:self didLoadData:chunks.lastObject];
+            [self.client URLProtocolDidFinishLoading:self];
+        });
+        return;
+    }
     NSData *data=replyData;
     if (scriptedReply) {
         NSData *payload=self.request.HTTPBody;
@@ -148,6 +159,43 @@ static void checkProtocols() {
     assert(probe(config,200,@{@"status":@"failed",@"object":@"response",@"output":@[]}).length);
 }
 
+// Each stream cuts through a UTF-8 scalar and ends later, after the first visible update.
+static void checkStreaming() {
+    auto frame=[](NSDictionary *event) {
+        NSData *json=[NSJSONSerialization dataWithJSONObject:event options:0 error:nil];
+        NSString *payload=[[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
+        return [NSString stringWithFormat:@"data: %@\r\n\r\n",payload];
+    };
+    for (NSInteger i=0;i<3;++i) {
+        auto format=(LLMAPIFormat)i;
+        auto delta=[&](NSString *text) {
+            if (format==LLMChatCompletions) return frame(@{@"choices":@[@{@"delta":@{@"content":text}}]});
+            if (format==LLMResponses) return frame(@{@"type":@"response.output_text.delta",@"delta":text});
+            return frame(@{@"type":@"content_block_delta",@"delta":@{@"type":@"text_delta",@"text":text}});
+        };
+        NSString *end=format==LLMChatCompletions ? @"data: [DONE]\r\n\r\n" :
+            frame(@{@"type":format==LLMResponses ? @"response.completed" : @"message_stop"});
+        NSString *first=[@": heartbeat\r\n\r\n" stringByAppendingString:delta(@"已经")];
+        NSData *bytes=[first dataUsingEncoding:NSUTF8StringEncoding];
+        NSUInteger split=[bytes rangeOfData:[@"已" dataUsingEncoding:NSUTF8StringEncoding] options:0 range:NSMakeRange(0,bytes.length)].location+1;
+        assert(split>0 && split<bytes.length);
+        for (BOOL complete : {YES,NO}) {
+            NSString *tail=[delta(@"完成") stringByAppendingString:complete ? end : @""];
+            streamChunks=@[[bytes subdataWithRange:NSMakeRange(0,split)],
+                [bytes subdataWithRange:NSMakeRange(split,bytes.length-split)],[tail dataUsingEncoding:NSUTF8StringEncoding]];
+            __block BOOL sawFirst=NO, done=NO;
+            httpCode=200;
+            [profile(@"https://fixture.invalid",format) ask:@"input" instruction:@"rules" progress:^(NSString *text) {
+                assert(NSThread.isMainThread && !done); if ([text isEqual:@"已经"]) sawFirst=YES;
+            } completion:^(NSString *text,NSString *error) {
+                assert(sawFirst && (complete ? [text isEqual:@"已经完成"] && !error : !text && error.length)); done=YES;
+            }];
+            waitFor(^BOOL{ return done; });
+        }
+    }
+    streamChunks=nil;
+}
+
 static void click(NSControl *control) {
     assert(control.enabled && control.target && control.action);
     auto call = (void (*)(id,SEL,id))[control.target methodForSelector:control.action];
@@ -161,6 +209,17 @@ static void checkForm() {
     assert(sections.count==1); click(sections[0]);
     LLMSettingsForm *form = [settings valueForKey:@"apiForm"];
     waitFor(^BOOL{ return form.apiKey.enabled; });
+    NSPopUpButton *colors = [settings valueForKey:@"promptColors"];
+    assert(colors && colors.numberOfItems==6 && colors.selectedTag==PreferredAgentPromptColor());
+    for (NSMenuItem *item in colors.itemArray) assert(item.image);
+    [colors selectItemWithTag:4]; click(colors); assert(PreferredAgentPromptColor()==4);
+    NSArray *fields=[settings valueForKey:@"fields"];
+    auto field=^(NSString *key){ return [fields filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"identifier == %@",key]].firstObject; };
+    NSPopUpButton *padding=field(AgentFramePadding);
+    NSSwitch *stream=field(AgentStreamReplies);
+    [padding selectItemWithTag:10]; click(padding); assert(PreferredAgentFramePadding()==10);
+    stream.state=NSControlStateValueOff; click(stream); assert(![TerminalPreferences() boolForKey:AgentStreamReplies]);
+    SetTerminalPreference(AgentStreamReplies,YES); SetTerminalPreference(AgentFramePadding,6);
     assert([form.apiKey isKindOfClass:NSSecureTextField.class] && form.format.numberOfItems==3);
     for (CGFloat width : {920.,500.,700.}) {
         [settings setFrameSize:NSMakeSize(width,526)]; [settings layoutSubtreeIfNeeded];
@@ -201,6 +260,10 @@ static void checkForm() {
     assert([settings valueForKey:@"apiForm"]==form);
     SetTerminalPreference(BuiltInAgent,NO);
     assert(![settings valueForKey:@"apiForm"] && !form.superview && [NSData dataWithContentsOfURL:blob]);
+    SetTerminalPreference(LocalAgentLauncher,NO);
+    assert(![settings valueForKey:@"promptColors"]);
+    SetTerminalPreference(LocalAgentLauncher,YES);
+    assert([(NSPopUpButton *)[settings valueForKey:@"promptColors"] selectedTag]==4);
     SetTerminalPreference(BuiltInAgent,YES); SetTerminalPreference(AIErrorExplanations,YES);
     assert([settings valueForKey:@"apiForm"]!=form && legacyReads==reads);
     NSMutableData *damaged=[[NSData dataWithContentsOfURL:blob] mutableCopy];
@@ -242,7 +305,7 @@ static void checkAssistant() {
             return @{@"choices":@[@{@"message":@{@"content":@"fixed"}}]};
         };
         __block BOOL done=NO;
-        [config ask:@"input" instruction:@"rules" completion:^(NSString *value,NSString *error) {
+        [config ask:@"input" instruction:@"rules" progress:nil completion:^(NSString *value,NSString *error) {
             assert(!error && [value isEqual:@"fixed"] && NSThread.isMainThread); done=YES;
         }];
         waitFor(^BOOL{ return done; });
@@ -319,7 +382,7 @@ int main() {
         storeDirectory=[NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
         Method directory=class_getClassMethod(LLMConfiguration.class,@selector(credentialDirectory));
         method_setImplementation(directory,method_getImplementation(class_getClassMethod(LLMConfiguration.class,@selector(fixtureDirectory))));
-        checkProtocols(); checkForm(); checkAssistant();
+        checkProtocols(); checkStreaming(); checkForm(); checkAssistant();
         assert([NSFileManager.defaultManager removeItemAtURL:storeDirectory error:nil]);
     }
     puts("Three LLM wire formats, local encryption and migration, agent directory/read loop, reviewed shell continuation and error diagnosis OK");

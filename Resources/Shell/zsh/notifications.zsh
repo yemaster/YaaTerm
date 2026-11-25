@@ -182,13 +182,24 @@ _yaaterm_prompt_context
 
 # The private key carries no text. A pending line can only be claimed by ZLE at an empty primary prompt.
 _yaaterm_input_widget() {
+    local subst=$options[promptsubst] bang=$options[promptbang] percent=$options[promptpercent]
     emulate -L zsh
+    [[ $subst == on ]] && setopt promptsubst
+    [[ $bang == on ]] && setopt promptbang
+    [[ $percent == off ]] && unsetopt promptpercent
     local id op line ok=0
     if [[ -n ${_yaaterm_editing-} ]]; then
         if [[ ! -r $_yaaterm_ai_dir/mode || $(<"$_yaaterm_ai_dir/mode") != $_yaaterm_mode ]]; then
             _yaaterm_edit_op=leave; zle .accept-line; return 0
         fi
+        if [[ -z ${_yaaterm_task_active-} ]]; then
+            _yaaterm_reset_agent_prompt
+        fi
         _yaaterm_draw_notes
+        if [[ -n ${_yaaterm_task_active-} && -z ${_yaaterm_review_id-} && -r $_yaaterm_ai_dir/preview ]]; then
+            PREDISPLAY=$(<"$_yaaterm_ai_dir/preview")
+            zle -R
+        fi
         if [[ -f $_yaaterm_ai_dir/approve ]]; then
             local approved=$(<"$_yaaterm_ai_dir/approve")
             zf_rm -f -- "$_yaaterm_ai_dir/approve"
@@ -226,7 +237,7 @@ _yaaterm_input_widget() {
     builtin printf '\033]777;yaaterm-input;%s;%s;%d\007' "$_yaaterm_exit_token" "$id" "$ok" > "$TTY"
     if (( ok && review )); then
         _yaaterm_review_id=$id _yaaterm_review_line=$line
-        PROMPT='$ ' POSTDISPLAY='  [Enter / Ctrl+C]'
+        PROMPT=$_yaaterm_shell_prompt RPROMPT=$_yaaterm_shell_right PREDISPLAY='' POSTDISPLAY='  [Enter / Ctrl+C]'
         zle reset-prompt
         zle -R
         builtin printf '\033]777;yaaterm-editor;%s;%s;review\007' "$_yaaterm_exit_token" "$id" > "$TTY"

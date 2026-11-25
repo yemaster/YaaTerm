@@ -1,13 +1,17 @@
 #!/bin/zsh -f
 # Text-mode adapters inherit the login shell's PATH and the CLI's own permissions.
 setopt pipefail
-(( $# == 2 )) || exit 2
+(( $# == 2 )) || [[ $# == 3 && $3 == --no-stream ]] || exit 2
+trace_prompt=${YAATERM_TRACE_PROMPT-}
+unset YAATERM_TRACE_PROMPT
+partial=(--include-partial-messages)
+[[ $3 == --no-stream ]] && partial=()
 case $1 in
     codex) exec codex exec -- "$2" ;;
-    claude) args=(claude --verbose --output-format stream-json -p -- "$2") ;;
+    claude) args=(claude --verbose --output-format stream-json "${partial[@]}" -p -- "$2") ;;
     agy) args=(agy --output-format stream-json --print "$2") ;;
     qodercn) args=(qodercn --output-format stream-json -p -- "$2") ;;
     omp) args=(omp --mode json -p -- "$2") ;;
     *) exit 2 ;;
 esac
-command "${args[@]}" | /usr/bin/perl "${0:A:h}/trace.pl"
+command "${args[@]}" | /usr/bin/perl "${0:A:h}/trace.pl" "$trace_prompt" "$3"

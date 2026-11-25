@@ -88,6 +88,8 @@ static NSString *cellText(const Row &row, int start, int end, bool trim) {
     int64_t _offset;
     int _topColumn, _anchor, _extent;
     std::vector<TextPoint> _visibleRows;
+    std::vector<int> _frameEdges; // Visible row boundaries with a before/after inset.
+    CGFloat _framePadding, _verticalGap;
     Row _fragment;
     FindBar *_findBar;
     TerminalAssistant *_assistant;
@@ -126,6 +128,7 @@ static NSString *cellText(const Row &row, int start, int end, bool trim) {
         _session = [Session new]; _sessionTitle = @"终端";
         _anchor = _extent = -1;
         _usesBackdrop = UsesTerminalBackdrop();
+        _framePadding=PreferredAgentFramePadding();
         _fontSize = PreferredFontSize();
         [self updateFont];
         [self sizeTerminal];
@@ -264,7 +267,7 @@ static NSString *cellText(const Row &row, int start, int end, bool trim) {
         button.imagePosition = icon ? NSImageOnly : NSNoImage;
         button.toolTip = tip; [button setAccessibilityLabel:tip]; button.tag = record.tag;
     }
-    NSRect frame = NSMakeRect(right-width,insetY+y*_lh,width,_lh);
+    NSRect frame = NSMakeRect(right-width,[self topOfRow:y],width,_lh);
     if (!NSEqualRects(button.frame,frame)) button.frame = frame;
 }
 struct ListingLayout {
@@ -373,7 +376,7 @@ struct PaintedLine {
     if (record.raw || !cache.fields) return NO;
 
     const auto &palette = CurrentInterfacePalette();
-    CGFloat top = insetY+y*_lh, pixel = 1/[self gridScale];
+    CGFloat top = [self topOfRow:y], pixel = 1/[self gridScale];
     NSRect band = NSMakeRect(insetX-5,top,MAX(0,NSWidth(self.bounds)-insetX+1),_lh);
     if (!cache.headerFill) {
         cache.headerFill = [palette.text colorWithAlphaComponent:.065];
@@ -433,6 +436,7 @@ struct PaintedLine {
     _wakeOnActivity = [handler copy];
     ++_findTicket; _findScan.reset();
     std::vector<TextPoint>().swap(_visibleRows);
+    std::vector<int>().swap(_frameEdges); _verticalGap=0;
     Row{}.swap(_fragment);
     [self clearListingButtons];
     for (auto &face : _faceAttributes) for (auto &attrs : face) attrs = nil;
@@ -441,6 +445,7 @@ struct PaintedLine {
 - (void)wakeFromIdle {
     _wakeOnActivity = nil;
     _screen->thaw();
+    if (_screen->hasAgentBlocks()) [self updateFrameSpacing];
     if (_fontChangePending) [self applyFontChange];
 }
 - (void)wakeForActivity {
@@ -520,6 +525,16 @@ struct PaintedLine {
     [self updateFont]; [self sizeTerminal]; self.needsDisplay = YES;
 }
 - (void)preferenceChanged:(NSNotification *)note {
+    if ([note.object isEqual:AgentFramePadding]) {
+        _framePadding=PreferredAgentFramePadding();
+        if (!_wakeOnActivity && _screen->hasAgentBlocks()) { [self updateFrameSpacing]; self.needsDisplay=YES; }
+        return;
+    }
+    if ([note.object isEqual:AgentPromptColor]) {
+        if (_session.agentInputID) [_session updateAgentPromptColor:PreferredAgentPromptColor()
+            wakeEditor:!_insideCommand && !_approvalSent && !_assistant.busy && _screen->bracketPaste && !_screen->alternate];
+        return;
+    }
     if ([note.object isEqual:PrettyTables] || [note.object isEqual:OpenWebLinks] || [note.object isEqual:RevealFileLinks]) {
         [self configureOutput];
         [self setLinkModifierDown:self.window.isKeyWindow && (NSEvent.modifierFlags & NSEventModifierFlagCommand)];
@@ -546,7 +561,7 @@ struct PaintedLine {
         _screen->setHistoryLimit(PreferredScrollbackLines());
         int64_t offset = std::min(_offset, _screen->historySize());
         if (offset != _offset) {
-            _offset = offset; _topColumn = 0; _visibleRows.clear(); _anchor = _extent = -1; self.needsDisplay = YES;
+            _offset = offset; _topColumn = 0; _visibleRows.clear(); [self updateFrameSpacing]; _anchor = _extent = -1; self.needsDisplay = YES;
         }
         if (_findBar && !PreferredScrollbackLines()) [self restartFind];
     }
@@ -652,7 +667,7 @@ struct PaintedLine {
     if (_offset) visibleRow=0;
     else if (!_screen->alternate && col+3 < _screen->cols && col >= _screen->row(row).written)
         x=insetX+col*_cw+5;
-    NSPoint origin=NSMakePoint(floor(x),floor(insetY+visibleRow*_lh+(_lh-14)/2));
+    NSPoint origin=NSMakePoint(floor(x),floor([self topOfRow:visibleRow]+(_lh-14)/2));
     if (!NSEqualPoints(_agentProgress.frame.origin,origin)) [_agentProgress setFrameOrigin:origin];
 }
 - (void)updateAgentAnimation:(NSNotification *)note {
@@ -744,6 +759,11 @@ struct PaintedLine {
             [self addSubview:_assistant.diagnosisView]; [self sizeTerminal];
         } else {
             _assistant.onActivity=^(BOOL busy) { [weak setAgentBusy:busy]; };
+            _assistant.onPreview=^(NSString *text) {
+                TerminalView *v=weak;
+                if (v && !v->_insideCommand && !v->_issuedID && v->_screen->bracketPaste && !v->_screen->alternate)
+                    [v->_session previewAgentText:text];
+            };
             _assistant.onTranscript=^(NSString *text) {
                 TerminalView *v=weak;
                 if (v) [v->_session postAgentText:text finished:!v->_assistant.busy wakeEditor:!v->_insideCommand && v->_screen->bracketPaste && !v->_screen->alternate];
@@ -772,7 +792,7 @@ struct PaintedLine {
                     if ([v->_session.agentInputID isEqual:identifier]) [v closeAssistant];
                 });
             };
-            if (![_session beginAgentInput:^(BOOL ready) {
+            if (![_session beginAgentInputWithColor:PreferredAgentPromptColor() ready:^(BOOL ready) {
                 if (!ready) { [weak closeAssistant]; NSBeep(); }
             }]) { [self closeAssistant]; NSBeep(); return nil; }
             [self positionAssistant];
@@ -822,7 +842,7 @@ struct PaintedLine {
     if (_wakeOnActivity) [self wakeForActivity];
     [self clearListingButtons];
     _screen->resize(w,h); [_session resizeCols:w rows:h];
-    _offset = 0; _topColumn = 0; _visibleRows.clear();
+    _offset = 0; _topColumn = 0; _visibleRows.clear(); [self updateFrameSpacing];
     _anchor = _extent = -1; self.needsDisplay = YES;
     if (_findBar) { [self restartFind]; [self positionFindBar]; }
 }
@@ -853,7 +873,11 @@ struct PaintedLine {
     else if (_offset) {
         _offset = std::min((uint64_t)_screen->historySize(), _offset + _screen->linesScrolled-before);
     }
-    if (reset || !historyOnly) _visibleRows.clear();
+    if (reset || !historyOnly) {
+        _visibleRows.clear();
+        if (_screen->hasAgentBlocks() && (_screen->agentOutputStamp() || !_frameEdges.empty() || full || before!=_screen->linesScrolled))
+            full |= [self updateFrameSpacing];
+    }
     if (reset && _findBar) [self restartFind];
     else if (_findHit && _findHit->last.row >= _screen->historySize()+_screen->dirtyFirst &&
              _findHit->first.row <= _screen->historySize()+_screen->dirtyLast) [self restartFind];
@@ -871,7 +895,7 @@ struct PaintedLine {
             if (first>0 && _screen->row(first-1).agentStamp) --first;
             if (last+1<_screen->height && _screen->row(last+1).agentStamp) ++last;
         }
-        [self setNeedsDisplayInRect:NSMakeRect(0,insetY+first*_lh,self.bounds.size.width,(last-first+1)*_lh)];
+        [self setNeedsDisplayInRect:NSMakeRect(0,[self topOfRow:first]-_verticalGap,self.bounds.size.width,[self topOfRow:last]-[self topOfRow:first]+_lh+2*_verticalGap)];
     }
 }
 - (TextPoint)displayPoint:(int)y {
@@ -929,6 +953,41 @@ struct PaintedLine {
         return YES;
     return p.row < _screen->historySize()+_screen->height && _screen->lineAt(p.row).agentStamp!=0;
 }
+// Share the pane's existing vertical margins across block edges. PTY rows,
+// glyph metrics and stored scrollback remain identical at every padding setting.
+- (BOOL)updateFrameSpacing {
+    int edges[501], count=0; // sizeTerminal caps the viewport at 500 rows.
+    if (_framePadding && _screen->hasAgentBlocks()) {
+        if (_screen->alternate) {
+            if (_screen->agentOutputStamp()) { edges[count++]=0; edges[count++]=_screen->height; }
+        } else {
+            BOOL previous=[self isAgentRow:-1];
+            for (int row=0; row<=_screen->height; ++row) {
+                BOOL framed=[self isAgentRow:row];
+                if (framed!=previous) edges[count++]=row;
+                previous=framed;
+            }
+        }
+    }
+    CGFloat gap=count ? MIN(_framePadding,floor((2*insetY-2)/count)) : 0;
+    if (gap==_verticalGap && count==(int)_frameEdges.size() && std::equal(edges,edges+count,_frameEdges.begin())) return NO;
+    _frameEdges.assign(edges,edges+count); _verticalGap=gap; _linkHitRect=NSZeroRect;
+    return YES;
+}
+- (CGFloat)topOfRow:(int)row {
+    CGFloat top=insetY+row*_lh;
+    if (!_verticalGap) return top;
+    auto before=std::upper_bound(_frameEdges.begin(),_frameEdges.end(),row)-_frameEdges.begin();
+    return top+before*_verticalGap-floor(_frameEdges.size()*_verticalGap/2);
+}
+- (int)rowAtY:(CGFloat)y {
+    int row=std::clamp((int)floor((y-insetY)/_lh),0,_screen->height-1);
+    if (_verticalGap) {
+        while (row>0 && y<[self topOfRow:row]) --row;
+        while (row+1<_screen->height && y>=[self topOfRow:row+1]) ++row;
+    }
+    return row;
+}
 - (void)drawAgentFramesFrom:(int)first to:(int)end {
     BOOL fullScreen=_screen->alternate;
     [[foreground() colorWithAlphaComponent:.32] setStroke];
@@ -939,8 +998,11 @@ struct PaintedLine {
         while (y<end && (fullScreen || [self isAgentRow:y])) ++y;
         BOOL above=fullScreen ? start>0 : [self isAgentRow:start-1];
         BOOL below=fullScreen ? y<_screen->height : [self isAgentRow:y];
-        NSRect clip=NSMakeRect(0,insetY+start*_lh,NSWidth(self.bounds),(y-start)*_lh);
-        NSRect box=NSInsetRect(clip,8+pixel/2,pixel/2);
+        CGFloat top=[self topOfRow:start]-(above ? 0 : _verticalGap);
+        CGFloat bottom=[self topOfRow:y-1]+_lh+(below ? 0 : _verticalGap);
+        NSRect clip=NSMakeRect(0,top,NSWidth(self.bounds),bottom-top);
+        CGFloat side=MAX(2.,insetX-(_framePadding ? _framePadding+4 : 1));
+        NSRect box=NSInsetRect(clip,side+pixel/2,pixel/2);
         if (above) { box.origin.y-=6; box.size.height+=6; }
         if (below) box.size.height+=6;
         [NSGraphicsContext saveGraphicsState]; NSRectClip(clip);
@@ -953,8 +1015,8 @@ struct PaintedLine {
     if (_wakeOnActivity) [self wakeForActivity];
     CGContextRef ctx = NSGraphicsContext.currentContext.CGContext;
     if (!_usesBackdrop) { [TerminalBackground() setFill]; NSRectFill(dirty); }
-    int first = std::max(0,(int)floor((NSMinY(dirty)-insetY)/_lh));
-    int end = std::min(_screen->height,(int)ceil((NSMaxY(dirty)-insetY)/_lh));
+    int first = MAX(0,[self rowAtY:NSMinY(dirty)]-(_verticalGap>0));
+    int end = MIN(_screen->height,[self rowAtY:NSMaxY(dirty)]+1+(_verticalGap>0));
     PaintedLine listingCache;
     BOOL selecting = _anchor >= 0 && _extent != _anchor;
     BOOL present = _tables && !_screen->alternate && !selecting && !_findBar.field.stringValue.length;
@@ -982,7 +1044,7 @@ struct PaintedLine {
         if (drawn) continue;
         const auto &row = *source;
         int count = std::min((int)row.size(),_screen->cols);
-        CGFloat py = insetY+y*_lh;
+        CGFloat py = [self topOfRow:y];
 
         // Paint backgrounds independently of glyph shaping, then overlay the selection once.
         for (int x = 0; x < count;) {
@@ -1059,7 +1121,7 @@ struct PaintedLine {
     if (framed) [self drawAgentFramesFrom:first to:end];
     if (_agentProgress) [self positionAgentProgress];
     if (!_offset && !_ended && self.window.firstResponder == self && (_screen->cursorVisible || _marked.length)) {
-        CGFloat x = insetX+_screen->x()*_cw, y = insetY+_screen->y()*_lh;
+        CGFloat x = insetX+_screen->x()*_cw, y = [self topOfRow:_screen->y()];
         if (_marked.length) [_marked drawAtPoint:NSMakePoint(x,y) withAttributes:@{NSFontAttributeName:_regular,
               NSBackgroundColorAttributeName:TerminalBackground(), NSForegroundColorAttributeName:foreground(),
               NSUnderlineStyleAttributeName:@1}];
@@ -1075,7 +1137,7 @@ struct PaintedLine {
 }
 - (int)indexAt:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    return std::clamp((int)((p.y-insetY)/_lh),0,_screen->height-1)*_screen->cols +
+    return [self rowAtY:p.y]*_screen->cols +
            std::clamp((int)((p.x-insetX)/_cw),0,_screen->cols-1);
 }
 - (NSURL *)linkAtPoint:(NSPoint)p {
@@ -1083,8 +1145,9 @@ struct PaintedLine {
 }
 - (NSURL *)linkAtPoint:(NSPoint)p stableRect:(NSRect *)stable {
     if (stable) *stable = NSZeroRect;
-    if ((!_webLinks && !_fileLinks) || !NSPointInRect(p,NSMakeRect(insetX,insetY,_cw*_screen->cols,_lh*_screen->height))) return nil;
-    int y = int((p.y-insetY)/_lh), x = int((p.x-insetX)/_cw);
+    if (!_webLinks && !_fileLinks) return nil;
+    int y=[self rowAtY:p.y], x=int((p.x-insetX)/_cw);
+    if (!NSPointInRect(p,NSMakeRect(insetX,[self topOfRow:y],_cw*_screen->cols,_lh))) return nil;
     TextPoint start = [self displayPoint:y], point = {start.row,start.column+x};
     const auto &row = [self displayRow:y];
     uint32_t leading = row.empty() ? 0 : row.front().tag;
@@ -1096,7 +1159,7 @@ struct PaintedLine {
     BOOL selecting = _anchor >= 0 && _extent != _anchor;
     BOOL pretty = _tables && block && (block.tag & 3) && !block.raw && !_screen->alternate && !selecting && !_findBar.field.stringValue.length;
     // Plain output has one hit target per grid cell. Table column edges can fall between cells.
-    if (stable && !pretty) *stable = NSMakeRect(insetX+x*_cw,insetY+y*_lh,_cw,_lh);
+    if (stable && !pretty) *stable = NSMakeRect(insetX+x*_cw,[self topOfRow:y],_cw,_lh);
     if (!pretty && (tag & 3) == ExplicitLink && rec.url)
         return rec.url.fileURL ? (_fileLinks ? rec.url : nil) : (_webLinks ? rec.url : nil);
     if (!pretty && x >= (int)row.size()) return nil;
@@ -1111,7 +1174,7 @@ struct PaintedLine {
             BOOL nameHit = line.index != NSNotFound && line.index >= line.text.length-name.length;
             if (pretty) {
                 auto column = layoutListing(block.format,[self listingWidth],_cw).columns[0];
-                NSRect nameRect = NSMakeRect(column.x,insetY+y*_lh,column.width,_lh);
+                NSRect nameRect = NSMakeRect(column.x,[self topOfRow:y],column.width,_lh);
                 nameHit = start.row==line.first && start.column==0 && NSPointInRect(p,nameRect);
                 if (stable && nameHit) *stable = nameRect;
             }
@@ -1135,7 +1198,7 @@ struct PaintedLine {
             for (int i=0;i<layout.count;++i) {
                 auto col = layout.columns[i];
                 if (col.band != band || p.x < col.x || p.x >= col.x+col.width) continue;
-                if (stable) *stable = NSMakeRect(col.x,insetY+y*_lh,col.width,_lh);
+                if (stable) *stable = NSMakeRect(col.x,[self topOfRow:y],col.width,_lh);
                 NSString *value = parsed.fields[i];
                 NSURL *url = TerminalURI(value,_webLinks,_fileLinks);
                 if (url) return url;
@@ -1164,7 +1227,8 @@ struct PaintedLine {
 - (size_t)mousePacket:(char (&)[48])packet event:(NSEvent *)event button:(int)button action:(MouseAction)action {
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
     CGFloat x = std::clamp(point.x-insetX,0.,_screen->cols*_cw-1);
-    CGFloat y = std::clamp(point.y-insetY,0.,_screen->height*_lh-1);
+    int row=[self rowAtY:point.y];
+    CGFloat y=row*_lh+std::clamp(point.y-[self topOfRow:row],0.,_lh-1);
     auto flags = event.modifierFlags;
     int mods = ((flags & NSEventModifierFlagShift) ? 4 : 0) | ((flags & NSEventModifierFlagOption) ? 8 : 0) |
                ((flags & NSEventModifierFlagControl) ? 16 : 0);
@@ -1322,7 +1386,7 @@ struct PaintedLine {
         top = moveDisplayRow(*_screen,top,steps<0);
     }
     if (top.row == original.row && top.column == original.column) return;
-    _offset = _screen->historySize()-top.row; _topColumn = top.column; _visibleRows.clear();
+    _offset = _screen->historySize()-top.row; _topColumn = top.column; _visibleRows.clear(); [self updateFrameSpacing];
     _anchor = _extent = -1; self.needsDisplay = YES;
 }
 - (void)copy:(id)sender {
@@ -1350,7 +1414,7 @@ struct PaintedLine {
 }
 - (void)sendString:(NSString *)str {
     if ([self agentOwnsEditor]) return;
-    if (_offset || _anchor != -1) { _offset = 0; _topColumn = 0; _visibleRows.clear(); _anchor = _extent = -1; self.needsDisplay = YES; }
+    if (_offset || _anchor != -1) { _offset = 0; _topColumn = 0; _visibleRows.clear(); [self updateFrameSpacing]; _anchor = _extent = -1; self.needsDisplay = YES; }
     [_session send:[str dataUsingEncoding:NSUTF8StringEncoding]];
 }
 - (void)paste:(id)sender {
@@ -1363,11 +1427,11 @@ struct PaintedLine {
     [self sendString:s];
 }
 - (BOOL)findHitIntersects:(NSRect)rect {
-    int first = std::max(0,(int)floor((NSMinY(rect)-insetY)/_lh));
-    int end = std::min(_screen->height,(int)ceil((NSMaxY(rect)-insetY)/_lh));
+    int first = [self rowAtY:NSMinY(rect)];
+    int end = [self rowAtY:NSMaxY(rect)]+1;
     for (int y=first; y<end; ++y) {
         NSRange hit = [self findColumnsInRow:y];
-        if (hit.length && NSIntersectsRect(rect,NSMakeRect(insetX+hit.location*_cw,insetY+y*_lh,hit.length*_cw,_lh))) return YES;
+        if (hit.length && NSIntersectsRect(rect,NSMakeRect(insetX+hit.location*_cw,[self topOfRow:y],hit.length*_cw,_lh))) return YES;
     }
     return NO;
 }
@@ -1414,7 +1478,7 @@ struct PaintedLine {
         for (int i=0; i<_screen->height/3 && (hit.row || hit.column); ++i)
             hit = moveDisplayRow(*_screen,hit,false);
         _offset = std::max<int64_t>(0,_screen->historySize()-hit.row);
-        _topColumn = _offset ? hit.column : 0; _visibleRows.clear();
+        _topColumn = _offset ? hit.column : 0; _visibleRows.clear(); [self updateFrameSpacing];
     }
     [self positionFindBar]; self.needsDisplay = YES;
 }
@@ -1576,7 +1640,7 @@ struct PaintedLine {
 - (NSUInteger)characterIndexForPoint:(NSPoint)p { return NSNotFound; }
 - (NSRect)firstRectForCharacterRange:(NSRange)r actualRange:(NSRangePointer)a {
     if (a) *a = r;
-    NSRect caret = NSMakeRect(insetX+_screen->x()*_cw,insetY+_screen->y()*_lh,_cw,_lh);
+    NSRect caret = NSMakeRect(insetX+_screen->x()*_cw,[self topOfRow:_screen->y()],_cw,_lh);
     return [self.window convertRectToScreen:[self convertRect:caret toView:nil]];
 }
 - (void)doCommandBySelector:(SEL)selector {

@@ -160,25 +160,117 @@ static NSString *assistantText(NSDictionary *json, LLMAPIFormat format) {
 @property NSMutableData *bytes;
 @property BOOL tooLarge;
 @property BOOL wantsText;
+@property (copy) void (^progress)(NSString *);
+
 @property (copy) void (^completion)(NSString *, NSString *);
 @end
-@implementation LLMExchange
+@implementation LLMExchange {
+    NSMutableString *_streamText;
+    NSMutableData *_eventData;
+    NSString *_streamError;
+    BOOL _skipLF, _finished;
+    NSUInteger _publishedLength;
+    NSTimeInterval _lastPublish;
+}
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveResponse:(NSURLResponse *)response
+        completionHandler:(void (^)(NSURLSessionResponseDisposition))reply {
+    NSInteger status=[(NSHTTPURLResponse *)response statusCode];
+    if (_progress && status>=200 && status<300 && [response.MIMEType.lowercaseString isEqual:@"text/event-stream"]) {
+        _streamText=[NSMutableString string]; _eventData=[NSMutableData data];
+    }
+    reply(NSURLSessionResponseAllow);
+}
+- (void)readEvent {
+    if (!_eventData.length) return;
+    if (_format==LLMChatCompletions && _eventData.length==6 && !memcmp(_eventData.bytes,"[DONE]",6)) {
+        _finished=YES; return;
+    }
+    NSDictionary *event=[NSJSONSerialization JSONObjectWithData:_eventData options:0 error:nil];
+    if (![event isKindOfClass:NSDictionary.class]) { _streamError=@"流式响应格式无效。"; return; }
+    NSString *type=event[@"type"];
+    if ([type isEqual:@"error"] || [type isEqual:@"response.failed"] || (event[@"error"] && event[@"error"]!=NSNull.null)) {
+        _streamError=@"模型服务中断了回复。"; return;
+    }
+    id delta=event[@"delta"], text=nil, reason=nil;
+    if (_format==LLMChatCompletions) {
+        if (![event[@"choices"] isKindOfClass:NSArray.class]) return;
+        NSDictionary *choice=[event[@"choices"] firstObject];
+        if (![choice isKindOfClass:NSDictionary.class]) return;
+        delta=choice[@"delta"]; reason=choice[@"finish_reason"];
+        if ([delta isKindOfClass:NSDictionary.class]) text=delta[@"content"];
+        if ([reason isEqual:@"content_filter"]) { _streamError=@"模型未能完成回复。"; return; }
+    } else if (_format==LLMResponses) {
+        if ([type isEqual:@"response.output_text.delta"] || [type isEqual:@"response.refusal.delta"]) text=delta;
+        else if ([type isEqual:@"response.completed"]) _finished=YES;
+        else if ([type isEqual:@"response.incomplete"]) { _streamError=@"模型回复不完整。"; return; }
+    } else {
+        if ([delta isKindOfClass:NSDictionary.class]) {
+            if ([type isEqual:@"content_block_delta"] && [delta[@"type"] isEqual:@"text_delta"]) text=delta[@"text"];
+            if ([type isEqual:@"message_delta"]) reason=delta[@"stop_reason"];
+        }
+        if ([type isEqual:@"message_stop"]) _finished=YES;
+    }
+    if ([reason isEqual:@"length"] || [reason isEqual:@"max_tokens"]) { _streamError=@"模型回复超过长度限制，请缩小任务范围。"; return; }
+    if ([text isKindOfClass:NSString.class]) {
+        if ([text length]>32768-_streamText.length) { _tooLarge=YES; return; }
+        [_streamText appendString:text];
+    }
+}
+- (void)readEventLine {
+    if (!_bytes.length) {
+        [self readEvent]; [_eventData setLength:0]; return;
+    }
+    const char *line=(const char *)_bytes.bytes;
+    if (_bytes.length<5 || memcmp(line,"data:",5)) return;
+    NSUInteger start=5+(_bytes.length>5 && line[5]==' ');
+    if (_bytes.length-start+1>128*1024-_eventData.length) { _tooLarge=YES; return; }
+    if (_eventData.length) [_eventData appendBytes:"\n" length:1];
+    [_eventData appendBytes:line+start length:_bytes.length-start];
+}
+- (void)readStream:(NSData *)data {
+    const uint8_t *bytes=(const uint8_t *)data.bytes;
+    NSUInteger start=0;
+    for (NSUInteger i=0; i<data.length; ++i) {
+        if (_skipLF) { _skipLF=NO; if (bytes[i]=='\n') { start=i+1; continue; } }
+        if (bytes[i]!='\r' && bytes[i]!='\n') continue;
+        if (i-start>128*1024-_bytes.length) { _tooLarge=YES; return; }
+        [_bytes appendBytes:bytes+start length:i-start]; [self readEventLine]; [_bytes setLength:0];
+        if (_tooLarge || _streamError || _finished) return;
+        _skipLF=bytes[i]=='\r'; start=i+1;
+    }
+    if (data.length-start>128*1024-_bytes.length) { _tooLarge=YES; return; }
+    [_bytes appendBytes:bytes+start length:data.length-start];
+}
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task willPerformHTTPRedirection:(NSHTTPURLResponse *)response
         newRequest:(NSURLRequest *)request completionHandler:(void (^)(NSURLRequest *))reply {
     reply(nil);
 }
 - (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveData:(NSData *)data {
-    if (self.tooLarge) return;
+    if (self.tooLarge || _streamError || _finished) return;
+    if (_streamText) {
+        [self readStream:data];
+        if (_tooLarge || _streamError) { [task cancel]; return; }
+        NSTimeInterval now=NSProcessInfo.processInfo.systemUptime;
+        if (_streamText.length!=_publishedLength && now-_lastPublish>=0.08) {
+            _lastPublish=now; _publishedLength=_streamText.length;
+            NSString *snapshot=[_streamText copy];
+            dispatch_async(dispatch_get_main_queue(), ^{ self.progress(snapshot); });
+        }
+        return;
+    }
     if (data.length > 128*1024-self.bytes.length) { self.tooLarge = YES; [task cancel]; return; }
     [self.bytes appendData:data];
 }
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
-    NSString *message = nil;
+    NSString *message = _streamError;
     if (self.tooLarge) message = @"响应过大，请检查 API 地址。";
     else if (error.code == NSURLErrorTimedOut) message = @"连接超时，请检查服务地址或网络。";
-    else if (error) message = @"未能连接服务，请检查网络、地址和 TLS 证书。";
+    else if (error && !message) message = @"未能连接服务，请检查网络、地址和 TLS 证书。";
     NSString *text = nil;
-    if (!message) {
+    if (!message && _streamText) {
+        if (!_finished) message=@"流式连接中断，请重试。";
+        else if (!(text=trim(_streamText)).length) message=@"模型没有返回文本。";
+    } else if (!message) {
         id json = [NSJSONSerialization JSONObjectWithData:self.bytes options:0 error:nil];
         message = responseError((NSHTTPURLResponse *)task.response,json,self.format);
         if (!message && self.wantsText) {
@@ -239,15 +331,16 @@ static NSString *assistantText(NSDictionary *json, LLMAPIFormat format) {
     return nil;
 }
 - (NSURLRequest *)connectionTestRequest {
-    return [self requestWithInstruction:nil input:@"Reply OK." limit:16];
+    return [self requestWithInstruction:nil input:@"Reply OK." limit:16 stream:NO];
 }
-- (NSURLRequest *)requestWithInstruction:(NSString *)instruction input:(NSString *)prompt limit:(NSInteger)limit {
+- (NSURLRequest *)requestWithInstruction:(NSString *)instruction input:(NSString *)prompt limit:(NSInteger)limit stream:(BOOL)stream {
     if (self.validationError) return nil;
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:self.requestURL];
     request.HTTPMethod = @"POST";
     [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-    [request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+    [request setValue:stream ? @"text/event-stream, application/json" : @"application/json" forHTTPHeaderField:@"Accept"];
     NSMutableDictionary *body = [@{@"model":_model} mutableCopy];
+    if (stream) body[@"stream"]=@YES;
     if (_format == LLMResponses) {
         body[@"input"] = prompt; if (instruction) body[@"instructions"] = instruction;
         body[@"max_output_tokens"] = @(limit); body[@"store"] = @NO;
@@ -275,18 +368,18 @@ static NSString *assistantText(NSDictionary *json, LLMAPIFormat format) {
     return config;
 }
 - (NSURLSessionDataTask *)testConnection:(void (^)(NSString *))completion {
-    return [self performRequest:self.connectionTestRequest wantsText:NO completion:^(NSString *, NSString *error){ completion(error); }];
+    return [self performRequest:self.connectionTestRequest wantsText:NO progress:nil completion:^(NSString *, NSString *error){ completion(error); }];
 }
-- (NSURLSessionDataTask *)ask:(NSString *)input instruction:(NSString *)instruction completion:(void (^)(NSString *,NSString *))completion {
-    return [self performRequest:[self requestWithInstruction:instruction input:input limit:2048] wantsText:YES completion:completion];
+- (NSURLSessionDataTask *)ask:(NSString *)input instruction:(NSString *)instruction progress:(void (^)(NSString *))progress completion:(void (^)(NSString *,NSString *))completion {
+    return [self performRequest:[self requestWithInstruction:instruction input:input limit:2048 stream:progress!=nil] wantsText:YES progress:progress completion:completion];
 }
-- (NSURLSessionDataTask *)performRequest:(NSURLRequest *)request wantsText:(BOOL)wantsText completion:(void (^)(NSString *,NSString *))completion {
+- (NSURLSessionDataTask *)performRequest:(NSURLRequest *)request wantsText:(BOOL)wantsText progress:(void (^)(NSString *))progress completion:(void (^)(NSString *,NSString *))completion {
     if (!request) {
         dispatch_async(dispatch_get_main_queue(), ^{ completion(nil,self.validationError); });
         return nil;
     }
     LLMExchange *probe = [LLMExchange new];
-    probe.wantsText = wantsText; probe.format = _format; probe.bytes = [NSMutableData data]; probe.completion = completion;
+    probe.progress=progress; probe.wantsText = wantsText; probe.format = _format; probe.bytes = [NSMutableData data]; probe.completion = completion;
     NSURLSessionConfiguration *config = [self testSessionConfiguration];
     if (wantsText) { config.timeoutIntervalForRequest = 90; config.timeoutIntervalForResource = 120; }
     NSURLSession *session = [NSURLSession sessionWithConfiguration:config delegate:probe delegateQueue:nil];

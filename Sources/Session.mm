@@ -165,12 +165,20 @@
     static const char key[]="\033[99;7~";
     [self sendBytes:key length:sizeof(key)-1];
 }
-- (BOOL)beginAgentInput:(void (^)(BOOL))ready {
+- (void)updateAgentPromptColor:(NSInteger)color wakeEditor:(BOOL)wake {
+    if (!_agentInputID) return;
+    NSString *path=[_controlDirectory stringByAppendingPathComponent:@"prompt-color"];
+    if ([@(color).stringValue writeToFile:path atomically:YES encoding:NSASCIIStringEncoding error:nil] &&
+        wake && [self shellIsForeground]) [self wakeEditor];
+}
+- (BOOL)beginAgentInputWithColor:(NSInteger)color ready:(void (^)(BOOL))ready {
     if (!_directoryCreated || _agentInputID || ![self shellIsForeground]) return NO;
     NSString *identifier=NSUUID.UUID.UUIDString;
     NSString *path=[_controlDirectory stringByAppendingPathComponent:@"mode"];
     if (![identifier writeToFile:path atomically:YES encoding:NSASCIIStringEncoding error:nil]) return NO;
-    _agentInputID=identifier; [self wakeEditor]; _agentReady=[ready copy];
+    _agentInputID=identifier;
+    [self updateAgentPromptColor:color wakeEditor:NO];
+    [self wakeEditor]; _agentReady=[ready copy];
     __weak Session *weak=self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{
         Session *s=weak;
@@ -206,11 +214,19 @@
     if (![identifier writeToFile:path atomically:YES encoding:NSASCIIStringEncoding error:nil]) return NO;
     [self wakeEditor]; return YES;
 }
+static NSString *transcriptText(NSString *text) {
+    static NSRegularExpression *controls=[NSRegularExpression regularExpressionWithPattern:@"[\\p{Cc}&&[^\\n\\t]]|\\p{Bidi_Control}" options:0 error:nil];
+    return [controls stringByReplacingMatchesInString:text options:0 range:NSMakeRange(0,text.length) withTemplate:@"�"];
+}
+- (void)previewAgentText:(NSString *)text {
+    if (!_agentInputID || ![self shellIsForeground]) return;
+    NSString *path=[_controlDirectory stringByAppendingPathComponent:@"preview"];
+    if ([transcriptText(text) writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil]) [self wakeEditor];
+}
 - (void)postAgentText:(NSString *)text finished:(BOOL)finished wakeEditor:(BOOL)wake {
     if (!_agentInputID) return;
-    // The transcript is literal text. Discard terminal controls before handing it to ZLE.
-    static NSRegularExpression *controls=[NSRegularExpression regularExpressionWithPattern:@"[\\p{Cc}&&[^\\n\\t]]|\\p{Bidi_Control}" options:0 error:nil];
-    text=[controls stringByReplacingMatchesInString:text options:0 range:NSMakeRange(0,text.length) withTemplate:@"�"];
+    unlink([_controlDirectory stringByAppendingPathComponent:@"preview"].fileSystemRepresentation);
+    text=transcriptText(text);
     NSString *name=[NSString stringWithFormat:@"note-%@-%010lu",_agentInputID,(unsigned long)++_noteNumber];
     if (text.length) [text writeToFile:[_controlDirectory stringByAppendingPathComponent:name] atomically:YES encoding:NSUTF8StringEncoding error:nil];
     if (finished) [@"" writeToFile:[_controlDirectory stringByAppendingPathComponent:[@"done-" stringByAppendingString:_agentInputID]]
@@ -221,7 +237,7 @@
     if (!_agentInputID) return;
     unlink([_controlDirectory stringByAppendingPathComponent:@"mode"].fileSystemRepresentation);
     for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:_controlDirectory error:nil])
-        if ([name hasPrefix:@"task-"] || [name hasPrefix:@"note-"] || [name hasPrefix:@"done-"] || [name isEqual:@"approve"])
+        if ([name hasPrefix:@"task-"] || [name hasPrefix:@"note-"] || [name hasPrefix:@"done-"] || [name isEqual:@"approve"] || [name isEqual:@"prompt-color"] || [name isEqual:@"preview"])
             unlink([_controlDirectory stringByAppendingPathComponent:name].fileSystemRepresentation);
     _agentInputID=nil; _earlyInput=nil; _agentReady=nil;
     if (wake && [self shellIsForeground]) [self wakeEditor];

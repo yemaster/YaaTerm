@@ -21,6 +21,9 @@ NSString *const CommandNoticesKey = @"CommandNotices";
 NSString *const SleepIdleTabs = @"SleepIdleTabs";
 NSString *const AIErrorExplanations = @"AIErrorExplanations";
 NSString *const BuiltInAgent = @"BuiltInAgent";
+NSString *const AgentPromptColor = @"AgentPromptColor";
+NSString *const AgentFramePadding = @"AgentFramePadding";
+NSString *const AgentStreamReplies = @"AgentStreamReplies";
 NSString *const LocalAgentLauncher = @"LocalAgentLauncher";
 NSString *const PrettyTables = @"PrettyTables";
 NSString *const OpenWebLinks = @"OpenWebLinks";
@@ -38,7 +41,8 @@ NSUserDefaults *TerminalPreferences(void) {
                                   AppearanceModeKey:@(mode), LightSchemeKey:@(CatppuccinLatte),
                                   DarkSchemeKey:@(CatppuccinMocha), BackgroundOpacity:@100, BackgroundImageOpacity:@25,
                                   BackgroundMaterialKey:@(PlainBackground),
-                                  AIErrorExplanations:@YES, BuiltInAgent:@YES, LocalAgentLauncher:@YES,
+                                  AIErrorExplanations:@YES, BuiltInAgent:@YES, LocalAgentLauncher:@YES, AgentPromptColor:@6,
+                                  AgentFramePadding:@6, AgentStreamReplies:@YES,
                                   PrettyTables:@YES, OpenWebLinks:@YES, RevealFileLinks:@YES,
                                   TerminalFontSize:@14, TerminalFontFamily:BundledFontFamily,
                                   SleepIdleTabs:@NO, AnimateTabSelection:@YES, CommandNoticesKey:@(AllCommands)}];
@@ -48,6 +52,14 @@ NSUserDefaults *TerminalPreferences(void) {
 }
 NSInteger PreferredOpacity(NSString *key) {
     return std::clamp([TerminalPreferences() integerForKey:key],0L,100L);
+}
+NSInteger PreferredAgentPromptColor(void) {
+    NSInteger index = [TerminalPreferences() integerForKey:AgentPromptColor];
+    return index >= 1 && index <= 6 ? index : 6;
+}
+NSInteger PreferredAgentFramePadding(void) {
+    NSInteger value = [TerminalPreferences() integerForKey:AgentFramePadding];
+    return value==0 || value==10 ? value : 6;
 }
 static BOOL reducedTransparency = NO;
 NSInteger EffectiveBackgroundOpacity(void) {
@@ -174,6 +186,8 @@ void UpdateSystemAppearance(NSAppearance *appearance) {
     refreshScheme();
 }
 void SetTerminalPreference(NSString *key, NSInteger value) {
+    if ([key isEqual:AgentPromptColor] && (value < 1 || value > 6)) return;
+    if ([key isEqual:AgentFramePadding] && value!=0 && value!=6 && value!=10) return;
     if ([key isEqual:TerminalFontWeight] && !validFontWeight(value)) return;
     if ([key isEqual:BackgroundMaterialKey] && (value < PlainBackground || value > LiquidGlassBackground)) return;
     if ([key isEqual:BackgroundOpacity] || [key isEqual:BackgroundImageOpacity])

@@ -4,13 +4,12 @@ _yaaterm_draw_notes() {
     local note done_file="$_yaaterm_ai_dir/done-$_yaaterm_mode"
     local -a notes=("$_yaaterm_ai_dir"/note-"$_yaaterm_mode"-*(N))
     (( $#notes )) || [[ -e $done_file ]] || return 0
-    BUFFER='' POSTDISPLAY='' CURSOR=0
+    BUFFER='' PREDISPLAY='' POSTDISPLAY='' CURSOR=0
     if [[ -e $done_file ]]; then
         zf_rm -f -- "$done_file"
         unset _yaaterm_task_active _yaaterm_review_id _yaaterm_review_line
     fi
-    _yaaterm_agent_prompt
-    zle reset-prompt
+    _yaaterm_reset_agent_prompt
     if (( $#notes )); then
         zle -R
         zle -I
@@ -23,6 +22,24 @@ _yaaterm_draw_notes() {
         done
     fi
 }
+_yaaterm_reset_agent_prompt() {
+    _yaaterm_agent_prompt
+    if [[ -z ${_yaaterm_task_active-} ]]; then
+        local color=6
+        if [[ -r $_yaaterm_ai_dir/prompt-color ]]; then
+            local saved=$(<"$_yaaterm_ai_dir/prompt-color")
+            [[ $saved == [1-6] ]] && color=$saved
+        fi
+        # The non-editable prefix is literal text, including any % or $ in the path.
+        PREDISPLAY=${(%):-%-15(l.%-16<…<%~%<< .)}
+        local start=${#PREDISPLAY}
+        PREDISPLAY+='Agent > '
+        region_highlight=("${(@)region_highlight:#$_yaaterm_label_style}")
+        _yaaterm_label_style="P$start $((${#PREDISPLAY}-1)) fg=$color"
+        region_highlight+=("$_yaaterm_label_style")
+    fi
+    zle reset-prompt
+}
 
 _yaaterm_resume_input() {
     # Let the outer line editor finish its normal initialization (including bracketed paste).
@@ -32,9 +49,14 @@ _yaaterm_resume_input() {
 # Let the theme update its real prompt between commands, then select the editor prompt
 # before ZLE paints. Keep the prompt used for the accepted command until ZLE finishes.
 _yaaterm_restore_prompt() {
+    unset YAATERM_TRACE_PROMPT
     if (( ${+_yaaterm_shell_prompt} )); then
         PROMPT=$_yaaterm_shell_prompt RPROMPT=$_yaaterm_shell_right
         unset _yaaterm_shell_prompt _yaaterm_shell_right
+        # Only our approved local adapter receives the interactive prompt for its tool trace.
+        if [[ -n ${_yaaterm_next_id-} && ${1-} == 'command yaa-agent '* ]]; then
+            export YAATERM_TRACE_PROMPT=${(%%)PROMPT}
+        fi
     fi
 }
 _yaaterm_agent_prompt() {
@@ -42,16 +64,9 @@ _yaaterm_agent_prompt() {
     if (( ! ${+_yaaterm_shell_prompt} )); then
         typeset -g _yaaterm_shell_prompt=$PROMPT _yaaterm_shell_right=$RPROMPT
     fi
-    RPROMPT=''
-    if [[ -n ${_yaaterm_task_active-} ]]; then
-        PROMPT=''
-    else
-        # Leave room for typing, keeping the tail of a long path in a split.
-        PROMPT='%-15(l.%-16<…<%~%<< .)Agent > '
-    fi
+    PROMPT='' RPROMPT=''
 }
 _yaaterm_compose() {
-    emulate -L zsh
     [[ -z ${_yaaterm_editing-} ]] || return 0
     local _yaaterm_editing=1 _yaaterm_edit_op='' goal current=''
     [[ -r $_yaaterm_ai_dir/mode ]] && current=$(<"$_yaaterm_ai_dir/mode")
@@ -63,10 +78,9 @@ _yaaterm_compose() {
         precmd_functions=(_yaaterm_restore_prompt "${precmd_functions[@]}" _yaaterm_agent_prompt)
     fi
     [[ -n ${_yaaterm_mode-} ]] || return 0
-    local prefix=$PREDISPLAY suffix=$POSTDISPLAY _yaaterm_review_id _yaaterm_review_line suffix=$POSTDISPLAY
-    _yaaterm_agent_prompt
-    BUFFER='' CURSOR=0 PREDISPLAY='' POSTDISPLAY='' POSTDISPLAY=''
-    zle reset-prompt
+    local prefix=$PREDISPLAY suffix=$POSTDISPLAY _yaaterm_review_id _yaaterm_review_line _yaaterm_label_style
+    BUFFER='' CURSOR=0 PREDISPLAY='' POSTDISPLAY=''
+    _yaaterm_reset_agent_prompt
     if [[ $current == $_yaaterm_mode ]]; then
         builtin printf '\033]777;yaaterm-editor;%s;%s;ready\007' "$_yaaterm_exit_token" "$_yaaterm_mode" > "$TTY"
     fi
@@ -82,8 +96,7 @@ _yaaterm_compose() {
         fi
         case $_yaaterm_edit_op in
             run)
-                PROMPT='$ ' POSTDISPLAY=''
-                zle reset-prompt
+                POSTDISPLAY=''
                 zle .accept-line
                 return 0 ;;
             leave) break ;;
@@ -102,16 +115,16 @@ _yaaterm_compose() {
             zle -M '正在提交任务'; continue
         fi
         builtin print -rn -- "$goal" >| "$_yaaterm_ai_dir/task-$_yaaterm_mode" || break
-        # Commit the submitted line, with an empty cached prompt for the next redraw.
-        PREDISPLAY=${(%)PROMPT} PROMPT=''
-        zle reset-prompt
+        # Retain the colored goal in the transcript before clearing the editor.
         zle -R
         zle -I
+        region_highlight=("${(@)region_highlight:#$_yaaterm_label_style}")
         typeset -g _yaaterm_task_active=1
         BUFFER='' CURSOR=0 PREDISPLAY=''
         builtin printf '\033]777;yaaterm-editor;%s;%s;task\007' "$_yaaterm_exit_token" "$_yaaterm_mode" > "$TTY"
     done
     PREDISPLAY=$prefix POSTDISPLAY=$suffix BUFFER=$_yaaterm_saved_buffer CURSOR=$_yaaterm_saved_cursor
+    region_highlight=("${(@)region_highlight:#$_yaaterm_label_style}")
     _yaaterm_restore_prompt
     zle reset-prompt
     builtin printf '\033]777;yaaterm-editor;%s;%s;closed\007' "$_yaaterm_exit_token" "$_yaaterm_mode" > "$TTY"

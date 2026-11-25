@@ -13,6 +13,8 @@
 - (void)consume:(std::string_view)bytes;
 - (void)toggleListing:(NSButton *)sender;
 - (const yaa::Row &)displayRow:(int)y;
+- (CGFloat)topOfRow:(int)y;
+- (int)rowAtY:(CGFloat)y;
 @end
 
 @interface HoverTestWindow : NSWindow
@@ -29,9 +31,14 @@
 static dispatch_block_t firstAgentReply;
 @implementation PromptFixture
 + (void)loadFixture:(void (^)(LLMConfiguration *,NSString *))completion { completion([PromptFixture new],nil); }
-- (NSURLSessionDataTask *)ask:(NSString *)input instruction:(NSString *)instruction completion:(void (^)(NSString *,NSString *))reply {
+- (NSURLSessionDataTask *)ask:(NSString *)input instruction:(NSString *)instruction progress:(void (^)(NSString *))progress completion:(void (^)(NSString *,NSString *))reply {
     NSDictionary *task=[NSJSONSerialization JSONObjectWithData:[input dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
     NSArray *steps=task[@"steps"]; NSString *json=nil;
+    if ([task[@"goal"] isEqual:@"stream-check"]) {
+        progress(@"First streaming line\n; print BAD-EXEC");
+        firstAgentReply=^{ reply(@"First streaming line\n; print BAD-EXEC\nLAST-STREAM-LINE",nil); };
+        return nil;
+    }
     if ([task[@"goal"] isEqual:@"interrupt-read"]) {
         assert(!steps.count); reply(@"{\"command\":\"sleep 30\"}",nil); return nil;
     }
@@ -315,8 +322,9 @@ static void testTerminalOutput(NSString *directory) {
     assert([[NSString stringWithContentsOfFile:proof encoding:NSUTF8StringEncoding error:nil] isEqual:@"verified\n"]);
     assert([NSFileManager.defaultManager createDirectoryAtPath:[directory stringByAppendingPathComponent:@"build %n"]
         withIntermediateDirectories:NO attributes:nil error:nil]);
-    send(@"HOME=$ZDOTDIR; repeat 48 print -r -- earlier-output; print -r -- VISIBLE-BEFORE-AGENT; PROMPT=$'THEME-TOP\\nLEFT> '; RPROMPT='THEME-RIGHT'; printf '\\033]2;before-agent\\007'\r");
+    send(@"HOME=$ZDOTDIR; repeat 48 print -r -- earlier-output; print -r -- VISIBLE-BEFORE-AGENT; setopt promptsubst; marker='LEFT>'; PROMPT=$'THEME-TOP\\n%F{2}${marker}%f '; RPROMPT='%F{4}THEME-RIGHT%f'; printf '\\033]2;before-agent\\007'\r");
     until(^BOOL{ return [pane.sessionTitle isEqual:@"before-agent"]; });
+    SetTerminalPreference(AgentPromptColor,6);
     NSUInteger subviews=pane.subviews.count;
     auto rowText=[&](int y) {
         std::string text;
@@ -346,7 +354,23 @@ static void testTerminalOutput(NSString *directory) {
     assert([[pane valueForKey:@"offset"] integerValue]==offset && before==snapshot());
     Method load=class_getClassMethod(LLMConfiguration.class,@selector(loadSaved:));
     IMP original=method_setImplementation(load,method_getImplementation(class_getClassMethod(PromptFixture.class,@selector(loadFixture:))));
-    [pane insertText:@"print 仅作任务 > \"$ZDOTDIR/accidental-execution\"" replacementRange:NSMakeRange(NSNotFound,0)];
+    auto colored=[&](const char *needle,int index) {
+        int rows=(NSHeight(pane.bounds)-24)/[[pane valueForKey:@"lh"] doubleValue];
+        for (int y=rows-1;y>=0;--y) {
+            auto x=rowText(y).find(needle);
+            if (x==std::string::npos) continue;
+            const auto &row=[pane displayRow:y];
+            for (size_t i=x;i<x+strlen(needle);++i) if (row[i].style.fg!=index) return false;
+            return true;
+        }
+        return false;
+    };
+    // Typing scrolls back to the live editor. Changing color keeps the draft intact.
+    [pane insertText:@"print" replacementRange:NSMakeRange(NSNotFound,0)];
+    until(^BOOL{ return colored("Agent >",yaa::Indexed+6); });
+    SetTerminalPreference(AgentPromptColor,5);
+    until(^BOOL{ return colored("Agent >",yaa::Indexed+5) && colored("print",yaa::Default); });
+    [pane insertText:@" 仅作任务 > \"$ZDOTDIR/accidental-execution\"" replacementRange:NSMakeRange(NSNotFound,0)];
     [pane doCommandBySelector:@selector(insertNewline:)];
     auto shown=[&](const char *value){ return snapshot().find(value)!=std::string::npos; };
     auto stampOf=[&](const char *prefix) -> int {
@@ -374,24 +398,39 @@ static void testTerminalOutput(NSString *directory) {
     };
     until(^BOOL{ return firstAgentReply && [pane valueForKey:@"agentProgress"] && stampOf("~ Agent > print")==0; });
     assert(!idlePromptCount() && !shown("THEME-TOP") && !shown("THEME-RIGHT"));
+    assert(colored("Agent >",yaa::Indexed+5));
     paint(pane,@"agent-waiting.png");
     firstAgentReply(); firstAgentReply=nil;
     until(^BOOL{ return pending(@"pwd"); });
-    assert(!idlePromptCount() && ![pane valueForKey:@"agentProgress"] && stampOf("$ pwd")>0);
+    assert(!idlePromptCount() && ![pane valueForKey:@"agentProgress"] && stampOf("LEFT> pwd")>0);
+    assert(shown("THEME-TOP") && shown("THEME-RIGHT") && colored("LEFT>",yaa::Indexed+2));
+    SetTerminalPreference(AgentPromptColor,4);
     [pane insertText:@"\r" replacementRange:NSMakeRange(NSNotFound,0)];
     send(@"\r"); // Typeahead in the PTY is not approval for a staged command.
     [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.04]];
     assert(pending(@"pwd")); key(NO);
     until(^BOOL{ return pending(@"ls"); });
-    assert(!idlePromptCount() && stampOf("$ ls")>0);
+    assert(!idlePromptCount() && stampOf("LEFT> ls")>0);
+    int frameStart=0;
+    while (frameStart<editingSize.ws_row && ![pane displayRow:frameStart].agentStamp) ++frameStart;
+    assert(frameStart>0 && frameStart<editingSize.ws_row);
+    auto reviewing=snapshot();
+    CGFloat rowHeight=[[pane valueForKey:@"lh"] doubleValue];
+    for (int padding : {0,10,6}) {
+        SetTerminalPreference(AgentFramePadding,padding);
+        CGFloat top=[pane topOfRow:frameStart];
+        assert(fabs(top-[pane topOfRow:frameStart-1]-rowHeight-padding)<.01);
+        assert([pane rowAtY:top+rowHeight/2]==frameStart && snapshot()==reviewing);
+        assert(ioctl(terminalFD,TIOCGWINSZ,&editingSize)==0 && editingSize.ws_row==originalSize.ws_row && editingSize.ws_col==originalSize.ws_col);
+    }
     paint(pane,@"agent-command-review.png"); key(NO);
-    until(^BOOL{ return [[pane valueForKey:@"awaitingApproval"] boolValue] && stampOf("$ print APPROVED")>0; });
+    until(^BOOL{ return [[pane valueForKey:@"awaitingApproval"] boolValue] && stampOf("LEFT> print APPROVED")>0; });
     assert(!idlePromptCount() && shown("VISIBLE-BEFORE-AGENT") && pane.assistantVisible);
     assert(![NSFileManager.defaultManager fileExistsAtPath:[directory stringByAppendingPathComponent:@"accidental-execution"]]);
     key(NO);
     until(^BOOL{ return stampOf("APPROVED-RESULT")>0 && [pane valueForKey:@"agentProgress"]; });
-    int echo=stampOf("$ print APPROVED"), output=stampOf("APPROVED-RESULT");
-    assert(echo>0 && !(echo&1) && output==(echo|1) && stampOf("$ pwd")!=echo);
+    int echo=stampOf("LEFT> print APPROVED"), output=stampOf("APPROVED-RESULT");
+    assert(echo>0 && !(echo&1) && output==(echo|1) && stampOf("LEFT> pwd")!=echo);
     NSSize paneSize=pane.frame.size;
     [pane setFrameSize:NSMakeSize(paneSize.width-42,paneSize.height)];
     assert(stampOf("APPROVED-RESULT")==output);
@@ -403,6 +442,7 @@ static void testTerminalOutput(NSString *directory) {
     assert(shown("APPROVED-RESULT") && pane.subviews.count==subviews && window.firstResponder==pane);
     paint(pane,@"builtin-agent-in-terminal.png");
     until(^BOOL{ return stampOf("~/build %n Agent > ")==0; });
+    assert(colored("Agent >",yaa::Indexed+4));
     send(@"syntax-check\r"); until(^BOOL{ return pending(@")"); });
     key(YES);
     until(^BOOL{ return ![[pane valueForKey:@"awaitingApproval"] boolValue] && idlePromptCount()==1; });
@@ -420,6 +460,13 @@ static void testTerminalOutput(NSString *directory) {
     until(^BOOL{ return [[pane valueForKey:@"runningOwned"] boolValue] && ![session shellIsForeground]; });
     key(YES);
     until(^BOOL{ return ![[pane valueForKey:@"insideCommand"] boolValue] && idlePromptCount()==1 && ![pane valueForKey:@"agentProgress"]; });
+    send(@"stream-check\r");
+    until(^BOOL{ return firstAgentReply && shown("First streaming line") && shown("; print BAD-EXEC"); });
+    assert(!idlePromptCount() && ![[pane valueForKey:@"awaitingApproval"] boolValue] && !shown("LAST-STREAM-LINE"));
+    firstAgentReply(); firstAgentReply=nil;
+    until(^BOOL{ return shown("LAST-STREAM-LINE") && idlePromptCount()==1; });
+    auto transcript=snapshot();
+    assert(transcript.find("First streaming line")==transcript.rfind("First streaming line"));
     method_setImplementation(load,original);
     [pane insertText:@"/exit" replacementRange:NSMakeRange(NSNotFound,0)];
     [pane doCommandBySelector:@selector(insertNewline:)];
@@ -433,7 +480,10 @@ static void testTerminalOutput(NSString *directory) {
     SetTerminalPreference(LocalAgentLauncher,YES);
     NSString *stub=[directory stringByAppendingPathComponent:@"claude"];
     NSString *events=@R"SH(#!/bin/sh
-[ "$1" = --verbose ] && [ "$2" = --output-format ] && [ "$3" = stream-json ] && [ "$4" = -p ] && [ "$5" = -- ] && [ "$6" = "show progress" ] || exit 41
+[ "$1" = --verbose ] && [ "$2" = --output-format ] && [ "$3" = stream-json ] && [ "$4" = --include-partial-messages ] && [ "$5" = -p ] && [ "$6" = -- ] && [ "$7" = "show progress" ] || exit 41
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"CLI-STREAM-"}}}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"VISIBLE"}}}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"CLI-STREAM-VISIBLE"}]}}'
 printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"pwd"}}]}}'
 printf '%s\n' '{"type":"user","message":{"content":[{"type":"tool_result","content":"WORKING-DIRECTORY"}]}}'
 printf '%s\n' '{"type":"result","result":"TASK-FINISHED"}'
@@ -451,7 +501,9 @@ printf '%s\n' '{"type":"result","result":"TASK-FINISHED"}'
     [pane doCommandBySelector:@selector(insertNewline:)];
     until(^BOOL{ return [[pane valueForKey:@"awaitingApproval"] boolValue] && shown("Enter / Ctrl+C"); });
     key(NO); until(^BOOL{ return detail!=nil; });
-    assert([detail containsString:@"$ pwd"] && [detail containsString:@"WORKING-DIRECTORY"] && [detail containsString:@"TASK-FINISHED"]);
+    assert([detail containsString:@"LEFT> pwd"] && [detail containsString:@"WORKING-DIRECTORY"] && [detail containsString:@"TASK-FINISHED"]);
+    assert(shown("LEFT> pwd"));
+    assert(shown("CLI-STREAM-VISIBLE") && snapshot().find("CLI-STREAM-VISIBLE")==snapshot().rfind("CLI-STREAM-VISIBLE"));
     assert(snapshot().find("TASK-FINISHED")!=std::string::npos);
     paint(pane,@"agent-in-terminal.png");
     pane.agentFinished=nil;
