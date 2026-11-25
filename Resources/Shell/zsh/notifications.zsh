@@ -271,6 +271,7 @@ _yaaterm_input_widget() {
             zf_rm -f -- "$_yaaterm_ai_dir/approve"
             if [[ -n ${_yaaterm_review_id-} && $approved == $_yaaterm_review_id && -n ${_yaaterm_task_active-} ]]; then
                 _yaaterm_next_id=$approved _yaaterm_edit_op=run
+                region_highlight=("${(@)region_highlight:|_yaaterm_prompt_styles}")
                 BUFFER=$_yaaterm_review_line CURSOR=${#_yaaterm_review_line} POSTDISPLAY=''
                 zle -R
                 zle .accept-line

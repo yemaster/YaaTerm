@@ -652,6 +652,7 @@ static void testTerminalOutput(NSString *directory) {
     until(^BOOL{ return pending(@"pwd"); });
     assert(!idlePromptCount() && ![pane valueForKey:@"agentProgress"] && stampOf("LEFT> pwd")>0);
     assert(shown("THEME-TOP") && shown("THEME-RIGHT") && colored("LEFT>",yaa::Indexed+2));
+    assert(colored("[Enter / Ctrl+C]",yaa::Indexed+4) && colored("pwd",yaa::Default));
     SetTerminalPreference(AgentPromptColor,4);
     [pane insertText:@"\r" replacementRange:NSMakeRange(NSNotFound,0)];
     send(@"\r"); // Typeahead in the PTY is not approval for a staged command.
@@ -662,6 +663,7 @@ static void testTerminalOutput(NSString *directory) {
         windowNumber:window.windowNumber context:nil characters:f6Key charactersIgnoringModifiers:f6Key isARepeat:NO keyCode:97];
     [[[ShortcutRecorder alloc] initWithShortcut:ApproveKey] recordEvent:approve];
     until(^BOOL{ return shown("F6 / Ctrl+C"); });
+    assert(colored("[F6 / Ctrl+C]",yaa::Indexed+4));
     key(NO); assert([[pane valueForKey:@"awaitingApproval"] boolValue]);
     [pane keyDown:approve];
     until(^BOOL{ return [[pane valueForKey:@"awaitingApproval"] boolValue] && [[pane valueForKeyPath:@"assistant.expectedCommand"] isEqual:@"ls"]; });
@@ -680,7 +682,9 @@ static void testTerminalOutput(NSString *directory) {
         assert([pane rowAtY:top+rowHeight/2]==frameStart && snapshot()==reviewing);
         assert(ioctl(terminalFD,TIOCGWINSZ,&editingSize)==0 && editingSize.ws_row==originalSize.ws_row && editingSize.ws_col==originalSize.ws_col);
     }
-    paint(pane,@"agent-command-review.png"); key(NO);
+    SetTerminalPreference(AppearanceModeKey,AlwaysLight); paint(pane,@"agent-command-review.png");
+    SetTerminalPreference(AppearanceModeKey,AlwaysDark); paint(pane,@"agent-command-review-dark.png");
+    SetTerminalPreference(AppearanceModeKey,mode); key(NO);
     until(^BOOL{ return [[pane valueForKey:@"awaitingApproval"] boolValue] && stampOf("LEFT> print APPROVED")>0; });
     assert(!idlePromptCount() && shown("VISIBLE-BEFORE-AGENT") && pane.assistantVisible);
     assert(![NSFileManager.defaultManager fileExistsAtPath:[directory stringByAppendingPathComponent:@"accidental-execution"]]);

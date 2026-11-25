@@ -145,4 +145,7 @@ _yaaterm_review_hint() {
     local keys='Enter / Ctrl+C'
     [[ ! -r $_yaaterm_ai_dir/review-keys ]] || keys=$(<"$_yaaterm_ai_dir/review-keys")
     POSTDISPLAY="  [$keys]"
+    region_highlight=("${(@)region_highlight:|_yaaterm_prompt_styles}")
+    _yaaterm_prompt_styles=("$((${#BUFFER}+2)) $((${#BUFFER}+${#POSTDISPLAY})) fg=blue")
+    region_highlight+=("${_yaaterm_prompt_styles[@]}")
 }
