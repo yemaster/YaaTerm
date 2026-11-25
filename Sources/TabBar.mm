@@ -241,16 +241,17 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
         [self addSubview:_highlight];
         _add = symbolButton(@"plus",@"新建标签页（⌘T）",self,@selector(add:));
         _more = symbolButton(@"chevron.down",@"所有标签页",self,@selector(showAll:));
-        _agent = symbolButton(@"sparkles",@"切换 Agent 输入（⌘J）",self,@selector(toggleAssistant:));
         _settings = symbolButton(@"gearshape",@"设置（⌘,）",self,@selector(openSettings:));
         [_settings setAccessibilityRole:NSAccessibilityRadioButtonRole];
         [_settings setAccessibilityLabel:@"设置"];
         _bell = symbolButton(@"bell",@"通知",self,@selector(showNotices:));
-        for (NSButton *b in @[_add,_more,_agent,_settings,_bell]) {
+        for (NSButton *b in @[_add,_more,_settings,_bell]) {
             b.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:12 weight:NSFontWeightMedium];
             [self addSubview:b];
         }
         _settings.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:14 weight:NSFontWeightRegular];
+        [self agentPreference:nil];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(agentPreference:) name:TerminalPreferenceChanged object:BuiltInAgent];
         [self updateBell];
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(noticesChanged:) name:TaskNoticesChanged object:nil];
         [self setAccessibilityElement:YES];
@@ -262,7 +263,7 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
 }
 - (void)paletteChanged:(NSNotification *)note {
     const auto &colors = CurrentInterfacePalette();
-    for (NSButton *button in @[_add,_more,_agent,_settings]) button.contentTintColor = colors.secondaryText;
+    for (NSButton *button in @[_add,_more,_settings]) button.contentTintColor = colors.secondaryText;
     for (TabItem *item in _items) [item applyPalette];
     if (self.workspace.showingSettings) _settings.contentTintColor = colors.accent;
     [self updateAssistantState]; [_notices refresh]; [self updateBell]; [_highlight updateInk]; _dropMark.fillColor = colors.accent;
@@ -351,7 +352,7 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
     BOOL reconfigured = _slotsDirty;
     if (reconfigured) [self rebuildSlots];
     NSInteger n = (NSInteger)_slots.size();
-    CGFloat available = MAX(0,NSWidth(self.bounds)-toolWidth-3*gearWidth-trailingInset-2*actionGap-4);
+    CGFloat available = MAX(0,NSWidth(self.bounds)-toolWidth-2*gearWidth-trailingInset-2*actionGap-2-(_agent ? gearWidth+2 : 0));
     auto span = [&](NSInteger first,NSInteger last) { return _slots[last].x+_slots[last].width-_slots[first].x; };
     BOOL overflow = n && span(0,n-1)>available;
     if (overflow) available = MAX(0,available-toolWidth);
@@ -407,8 +408,19 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
 }
 - (void)setFrameSize:(NSSize)size { [super setFrameSize:size]; self.needsLayout = YES; }
 - (void)add:(id)sender { if (_onAdd) _onAdd(); }
+- (void)agentPreference:(NSNotification *)note {
+    if ([TerminalPreferences() boolForKey:BuiltInAgent]) {
+        if (!_agent) {
+            _agent=symbolButton(@"sparkles",@"切换 Agent 输入（⌘J）",self,@selector(toggleAssistant:));
+            _agent.symbolConfiguration=_add.symbolConfiguration; [self addSubview:_agent];
+        }
+        [self updateAssistantState];
+    } else { [_agent removeFromSuperview]; _agent=nil; }
+    self.needsLayout=YES;
+}
 - (void)updateAssistantState {
-    BOOL selected=self.workspace.focused.assistantVisible;
+    if (!_agent) return;
+    BOOL selected=self.workspace.focused.builtInAgentVisible;
     BOOL enabled=self.workspace.focused!=nil;
     if (_agent.enabled!=enabled) _agent.enabled=enabled;
     NSColor *tint=selected ? CurrentInterfacePalette().accent : CurrentInterfacePalette().secondaryText;
@@ -597,7 +609,7 @@ struct StripSlot { NSInteger tag, end; CGFloat x, width; };
     for (TabItem *item in _items) {
         BOOL matches = _namingGroup ? item.tag<0 && item.group==_namingGroup : item.tag==index;
         if (!matches) continue;
-        CGFloat right = MAX(0.,NSMinX(_agent.frame)-actionGap);
+        CGFloat right = MAX(0.,NSMinX((_agent ?: _settings).frame)-actionGap);
         CGFloat width = MIN(right,MAX(minWidth,NSWidth(item.frame)));
         _nameField.frame = NSMakeRect(MIN(NSMinX(item.frame),right-width),floor(NSMidY(item.frame)-11),width,22);
         return;

@@ -21,6 +21,11 @@ tool=${0##*/}
 case "$tool" in
     agy) printf '\033]7501;state=working\007\033]7501;state=done:app=antigravity:msg=VGVzdHMgcGFzc2Vk\007' ;;
     codex)
+        if [ "$1" = exec ]; then
+            [ "$2" = -- ] && [ "$3" = "check my 'task'" ] || exit 30
+            printf '$ pwd\nfixture result\n'
+            exit
+        fi
         [ "$1" = -c ] && [ "$2" = 'tui.notifications=["agent-turn-complete"]' ] || exit 31
         printf '\033]9;Tests passed\007' ;;
     omp)
@@ -119,12 +124,56 @@ read -r reply
         send(@"print -r -- \"PLUGIN[$+functions[_zsh_highlight],$+parameters[ZSH_HIGHLIGHT_VERSION]]\"\r");
         waitFor(^bool{ return contains(@"PLUGIN[1,0]\r\n"); });
         send(@"exit\r"); waitFor(^bool{return (bool)exited;});
-        // Dedicated local-Agent tabs start after login setup, from their own working directory.
-        exited = NO; [output setLength:0]; session.launchAgent=@"codex";
+        // Toggle tracking on the same login shell. With tracking off there are no command-boundary records.
+        exited = NO; [output setLength:0]; session.tracksCommands=NO;
+        screen.commandExited={};
         assert([session startAt:dir cols:100 rows:24 error:nil]);
         screen.commandExitToken=session.commandExitToken.UTF8String;
-        waitFor(^bool{ return contains(@"\033]2;waiting-codex\007"); });
-        send(@"next\r"); waitFor(^bool{ return screen.bracketPaste; });
+        waitFor(^bool{ return contains(@"yt> ") && screen.bracketPaste; });
+        send(@"print -r -- READY\r");
+        waitFor(^bool{ return contains(@"\r\nREADY\r\n") && screen.bracketPaste; });
+        assert(!contains(@"yaaterm-begin;") && !contains(@"yaaterm-end;"));
+        session.tracksCommands=YES;
+        screen.inputAccepted=[&](std::string_view id,bool ok) {
+            NSString *value=[[NSString alloc] initWithBytes:id.data() length:id.size() encoding:NSASCIIStringEncoding];
+            [session acknowledgeLine:value accepted:ok];
+        };
+        std::string lastID;
+        screen.commandBegan=[&](std::string_view id){ lastID=id; };
+        int lastStatus=-1;
+        int *statusPtr=&lastStatus;
+        auto *grid=&screen;
+        screen.promptReturned=[&](int code,std::string_view){ lastStatus=code; };
+        auto run=[&](NSString *command,int status) {
+            lastStatus=-1;
+            __block int ack=-1;
+            NSString *id=[session submitLine:command execute:YES acknowledged:^(BOOL ok){ ack=ok; }];
+            assert(id); waitFor(^bool{ return ack>=0; }); assert(ack==1);
+            waitFor(^bool{ return *statusPtr>=0 && grid->bracketPaste; });
+            assert(lastID==id.UTF8String && lastStatus==status);
+        };
+        send(@"print -r keep-");
+        __block int refused=-1;
+        assert([session submitLine:@"print -r unexpected" execute:YES acknowledged:^(BOOL ok){ refused=ok; }]);
+        waitFor(^bool{ return refused>=0; }); assert(!refused);
+        send(@"value\r"); waitFor(^bool{ return contains(@"keep-value\r\n") && screen.bracketPaste; });
+        assert([@"READ-FROM-CWD" writeToFile:[dir stringByAppendingPathComponent:@"sample file"] atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+        assert([files createSymbolicLinkAtPath:[dir stringByAppendingPathComponent:@"shortcut"] withDestinationPath:@"sample file" error:nil]);
+        run(@"command yaa-inspect read 'sample file'",0);
+        auto visible=[&](const char *needle) {
+            for (int i=0;i<grid->height;++i) {
+                std::string row;
+                for (auto &cell : grid->row(i)) row+=(cell.ch<128 ? (char)cell.ch : ' ');
+                if (row.find(needle)!=std::string::npos) return true;
+            }
+            return false;
+        };
+        assert(visible("yt> command yaa-inspect read 'sample file'") && visible("READ-FROM-CWD"));
+        run(@"command yaa-inspect read 'shortcut'",1);
+        run(@"command yaa-agent codex 'check my '\\''task'\\'''",0);
+        assert(visible("$ pwd") && visible("fixture result"));
+        session.tracksCommands=NO;
+        assert(![session submitLine:@"pwd" execute:YES acknowledged:nil]);
         send(@"exit\r"); waitFor(^bool{ return (bool)exited; });
         assert([files removeItemAtPath:dir error:nil]);
         puts("Real zsh PTY: live colors, login startup order, long paste, foreground process exit, suspended job filtering and existing highlighter OK");

@@ -668,7 +668,12 @@ void Screen::finishOSC() {
         }
         if (take(';') != commandExitToken) return;
         if (event=="yaaterm-begin") {
-            if (!alternate && commandBegan) commandBegan();
+            if (!alternate && commandBegan) commandBegan(data);
+            return;
+        }
+        if (event=="yaaterm-input") {
+            auto id=take(';');
+            if (inputAccepted && id.size()==36 && (data=="0" || data=="1")) inputAccepted(id,data=="1");
             return;
         }
         if (event=="yaaterm-end") {

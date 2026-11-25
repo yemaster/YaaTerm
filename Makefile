@@ -17,7 +17,12 @@ all: $(BIN)
 $(SPARKLE)/.ready: scripts/fetch-sparkle.sh
 	sh $<
 
-$(BIN): $(SPARKLE)/.ready $(SOURCES) $(wildcard Sources/*.h Sources/*.hpp Sources/*.inc) Makefile Info.plist Resources/Unicode-LICENSE.txt Resources/YaaTerm.icns Resources/ThemeCredits.txt $(wildcard Resources/ReleaseNotes/*.txt) $(wildcard Resources/Fonts/*) $(SHELL_RESOURCES)
+$(APP)/Contents/Helpers/yaa-inspect: Sources/Inspect.mm Makefile
+	mkdir -p $(@D)
+	$(CXX) $(FLAGS) $(ARCH_FLAGS) -fobjc-arc $< -framework Foundation -o $@
+	codesign --force --sign - $@
+
+$(BIN): $(APP)/Contents/Helpers/yaa-inspect $(SPARKLE)/.ready $(SOURCES) $(wildcard Sources/*.h Sources/*.hpp Sources/*.inc) Makefile Info.plist Resources/Unicode-LICENSE.txt Resources/YaaTerm.icns Resources/ThemeCredits.txt $(wildcard Resources/ReleaseNotes/*.txt) $(wildcard Resources/Fonts/*) $(SHELL_RESOURCES)
 	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
 	cp Info.plist $(APP)/Contents/
 	rsync -a --delete --exclude=.DS_Store Resources/ $(APP)/Contents/Resources/

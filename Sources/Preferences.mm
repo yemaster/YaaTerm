@@ -19,6 +19,9 @@ NSString *const BackgroundImageOpacity = @"BackgroundImageOpacity";
 NSString *const BackgroundImagePath = @"BackgroundImagePath";
 NSString *const CommandNoticesKey = @"CommandNotices";
 NSString *const SleepIdleTabs = @"SleepIdleTabs";
+NSString *const AIErrorExplanations = @"AIErrorExplanations";
+NSString *const BuiltInAgent = @"BuiltInAgent";
+NSString *const LocalAgentLauncher = @"LocalAgentLauncher";
 NSString *const PrettyTables = @"PrettyTables";
 NSString *const OpenWebLinks = @"OpenWebLinks";
 NSString *const RevealFileLinks = @"RevealFileLinks";
@@ -35,6 +38,7 @@ NSUserDefaults *TerminalPreferences(void) {
                                   AppearanceModeKey:@(mode), LightSchemeKey:@(CatppuccinLatte),
                                   DarkSchemeKey:@(CatppuccinMocha), BackgroundOpacity:@100, BackgroundImageOpacity:@25,
                                   BackgroundMaterialKey:@(PlainBackground),
+                                  AIErrorExplanations:@YES, BuiltInAgent:@YES, LocalAgentLauncher:@YES,
                                   PrettyTables:@YES, OpenWebLinks:@YES, RevealFileLinks:@YES,
                                   TerminalFontSize:@14, TerminalFontFamily:BundledFontFamily,
                                   SleepIdleTabs:@NO, AnimateTabSelection:@YES, CommandNoticesKey:@(AllCommands)}];

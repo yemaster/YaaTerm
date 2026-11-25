@@ -152,13 +152,37 @@ static void positionAtDrop(TabWorkspace *workspace, NSRect preview) {
 - (void)larger:(id)s { [self.current.focused adjustFont:1]; }
 - (void)smaller:(id)s { [self.current.focused adjustFont:-1]; }
 - (void)normalSize:(id)s { [self.current.focused adjustFont:0]; }
-- (void)launchLocalAgent:(NSMenuItem *)item { [self.current addAgentTab:item.representedObject]; }
+- (void)launchLocalAgent:(NSMenuItem *)item { [self.current.focused showLocalAgent:item.representedObject]; }
 - (void)toggleAssistant:(id)sender { [self.current.focused toggleAssistant:sender]; }
 - (void)explainFailure:(id)sender { [self.current.focused explainFailure:sender]; }
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
     if (item.action==@selector(explainFailure:)) return self.current.focused.hasFailedCommand;
-    if (item.action==@selector(toggleAssistant:)) return self.current.focused!=nil;
+    if (item.action==@selector(toggleAssistant:)) return self.current.focused && [TerminalPreferences() boolForKey:BuiltInAgent];
+    if (item.action==@selector(launchLocalAgent:)) return self.current.focused && [TerminalPreferences() boolForKey:LocalAgentLauncher];
     return YES;
+}
+- (void)refreshAgentMenu:(NSNotification *)note {
+    NSMenu *bar=NSApp.mainMenu;
+    NSMenuItem *old=[bar itemWithTitle:@"Agent"];
+    if (old) [bar removeItem:old];
+    NSUserDefaults *prefs=TerminalPreferences();
+    BOOL input=[prefs boolForKey:BuiltInAgent], explain=[prefs boolForKey:AIErrorExplanations], local=[prefs boolForKey:LocalAgentLauncher];
+    if (!input && !explain && !local) return;
+    NSInteger index=[bar indexOfItemWithTitle:@"编辑"]+1;
+    NSMenuItem *entry=[bar insertItemWithTitle:@"Agent" action:nil keyEquivalent:@"" atIndex:index];
+    NSMenu *assistant=[[NSMenu alloc] initWithTitle:entry.title]; entry.submenu=assistant;
+    if (input) [assistant addItemWithTitle:@"切换 Agent 输入" action:@selector(toggleAssistant:) keyEquivalent:@"j"];
+    if (explain) {
+        NSMenuItem *item=[assistant addItemWithTitle:@"解释上一条错误" action:@selector(explainFailure:) keyEquivalent:@"E"];
+        item.keyEquivalentModifierMask=NSEventModifierFlagCommand|NSEventModifierFlagShift;
+    }
+    if (!local) return;
+    NSMenuItem *launcher = [assistant addItemWithTitle:@"在当前终端运行" action:nil keyEquivalent:@""];
+    launcher.submenu = [[NSMenu alloc] initWithTitle:launcher.title];
+    for (NSArray *tool in @[@[@"Codex",@"codex"],@[@"Claude Code",@"claude"],@[@"Antigravity",@"agy"],@[@"Qoder CN",@"qodercn"],@[@"omp",@"omp"]]) {
+        NSMenuItem *launch = [launcher.submenu addItemWithTitle:tool[0] action:@selector(launchLocalAgent:) keyEquivalent:@""];
+        launch.representedObject=tool[1];
+    }
 }
 - (void)installMenu {
     NSMenu *bar = [NSMenu new]; NSApp.mainMenu = bar;
@@ -187,15 +211,9 @@ static void positionAtDrop(TabWorkspace *workspace, NSRect preview) {
     item(edit,@"搜索终端内容…",@selector(showFind:),@"f",cmd);
     item(edit,@"查找下一处",@selector(findNext:),@"g",cmd);
     item(edit,@"查找上一处",@selector(findPrevious:),@"G",shift);
-    NSMenu *assistant = menu(@"Agent");
-    item(assistant,@"切换 Agent 输入",@selector(toggleAssistant:),@"j",cmd);
-    item(assistant,@"解释上一条错误",@selector(explainFailure:),@"E",shift);
-    NSMenuItem *local = [assistant addItemWithTitle:@"在新标签页启动" action:nil keyEquivalent:@""];
-    local.submenu = [[NSMenu alloc] initWithTitle:local.title];
-    for (NSArray *tool in @[@[@"Codex",@"codex"],@[@"Claude Code",@"claude"],@[@"Antigravity",@"agy"],@[@"Qoder CN",@"qodercn"],@[@"omp",@"omp"]]) {
-        NSMenuItem *launch = [local.submenu addItemWithTitle:tool[0] action:@selector(launchLocalAgent:) keyEquivalent:@""];
-        launch.representedObject=tool[1];
-    }
+    for (NSString *key in @[AIErrorExplanations,BuiltInAgent,LocalAgentLauncher])
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refreshAgentMenu:) name:TerminalPreferenceChanged object:key];
+    [self refreshAgentMenu:nil];
     NSMenu *view = menu(@"显示");
     item(view,@"放大字号",@selector(larger:),@"=",cmd); item(view,@"缩小字号",@selector(smaller:),@"-",cmd);
     item(view,@"恢复默认字号",@selector(normalSize:),@"0",cmd);

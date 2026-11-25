@@ -28,6 +28,7 @@ extern NSString *const BackgroundImagePath;
 NSInteger PreferredOpacity(NSString *key);
 NSString *PreferredBackgroundImagePath(void);
 extern NSString *const SleepIdleTabs;
+extern NSString *const AIErrorExplanations, *const BuiltInAgent, *const LocalAgentLauncher;
 extern NSString *const PrettyTables;
 extern NSString *const OpenWebLinks;
 extern NSString *const RevealFileLinks;

@@ -14,13 +14,14 @@
 - (void)sleepWithWakeHandler:(dispatch_block_t)handler;
 - (void)wakeFromIdle;
 - (void)start;
-- (void)startAt:(NSString *)directory agent:(NSString *)agent;
+- (void)showLocalAgent:(NSString *)tool;
 - (NSString *)workingDirectory;
 - (void)stop;
 - (void)setLinkModifierDown:(BOOL)down;
 - (void)adjustFont:(CGFloat)delta;
 @property (copy) void (^configureAI)(void), (^assistantVisibilityChanged)(void);
 @property (readonly) BOOL assistantVisible;
+@property (readonly) BOOL builtInAgentVisible;
 @property (readonly) BOOL hasFailedCommand;
 - (void)toggleAssistant:(id)sender;
 - (void)explainFailure:(id)sender;

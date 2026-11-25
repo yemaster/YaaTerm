@@ -283,28 +283,26 @@ static NSSize minPane(NSView *view) {
     };
     return pane;
 }
-- (void)addTab { [self addAgentTab:nil]; }
-- (void)addAgentTab:(NSString *)agent {
+- (void)addTab {
     NSInteger slot = _active ? self.selectedIndex+1 : 0;
     TabGroup *group = _active.group;
     if (group && (group.collapsed || self.showingSettings)) {
         slot = NSMaxRange([self rangeOfGroup:group]); group = nil;
     }
-    [self addTabAt:slot group:group agent:agent];
+    [self addTabAt:slot group:group];
 }
 - (void)addTabInGroup:(TabGroup *)group {
     NSRange range = [self rangeOfGroup:group];
-    if (range.length) [self addTabAt:NSMaxRange(range) group:group agent:nil];
+    if (range.length) [self addTabAt:NSMaxRange(range) group:group];
 }
-- (void)addTabAt:(NSInteger)index group:(TabGroup *)group agent:(NSString *)agent {
-    NSString *directory=agent ? self.focused.workingDirectory : nil;
+- (void)addTabAt:(NSInteger)index group:(TabGroup *)group {
     TerminalTab *tab = [TerminalTab new]; tab.group = group;
     tab.root = [[NSView alloc] initWithFrame:self.bounds];
     tab.root.autoresizingMask = NSViewWidthSizable|NSViewHeightSizable;
     TerminalView *pane = [self makePane:tab.root.bounds forTab:tab];
     [tab.root addSubview:pane]; tab.focused = pane;
     [self insertTab:tab atIndex:index];
-    if (agent) [pane startAt:directory ?: NSHomeDirectory() agent:agent]; else [pane start];
+    [pane start];
 }
 - (void)insertTab:(TerminalTab *)tab atIndex:(NSInteger)index {
     tab.owner = self;

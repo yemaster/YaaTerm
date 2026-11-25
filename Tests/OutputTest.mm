@@ -265,11 +265,43 @@ static void testTerminalOutput(NSString *directory) {
     NSString *proof=[directory stringByAppendingPathComponent:@"confirmed.txt"];
     NSString *suggestion=@"print -r verified > \"$ZDOTDIR/confirmed.txt\"";
     __block BOOL inserted=NO;
-    until(^BOOL{ if (!inserted) inserted=panel.onInsert(suggestion); return inserted; });
-    assert(!panel.onInsert(@"echo second") && ![NSFileManager.defaultManager fileExistsAtPath:proof]);
+    until(^BOOL{ if (!inserted) inserted=panel.onShellLine(suggestion,NO); return inserted; });
+    assert(!panel.onShellLine(@"echo second",YES));
+    until(^BOOL{ return ![session valueForKey:@"pendingID"]; });
+    assert(![NSFileManager.defaultManager fileExistsAtPath:proof]);
     send(@"\r");
     until(^BOOL{ return !pane.hasFailedCommand && [NSFileManager.defaultManager fileExistsAtPath:proof]; });
     assert([[NSString stringWithContentsOfFile:proof encoding:NSUTF8StringEncoding error:nil] isEqual:@"verified\n"]);
+    SetTerminalPreference(BuiltInAgent,NO);
+    SetTerminalPreference(AIErrorExplanations,NO);
+    SetTerminalPreference(LocalAgentLauncher,NO);
+    [pane toggleAssistant:nil]; [pane showLocalAgent:@"codex"];
+    assert(![pane valueForKey:@"assistant"] && !session.tracksCommands && ![pane valueForKey:@"fixButton"]);
+    SetTerminalPreference(LocalAgentLauncher,YES);
+    NSString *stub=[directory stringByAppendingPathComponent:@"claude"];
+    NSString *events=@R"SH(#!/bin/sh
+[ "$1" = --verbose ] && [ "$2" = --output-format ] && [ "$3" = stream-json ] && [ "$4" = -p ] && [ "$5" = -- ] && [ "$6" = "show progress" ] || exit 41
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"pwd"}}]}}'
+printf '%s\n' '{"type":"user","message":{"content":[{"type":"tool_result","content":"WORKING-DIRECTORY"}]}}'
+printf '%s\n' '{"type":"result","result":"TASK-FINISHED"}'
+)SH";
+    assert([events writeToFile:stub atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+    assert([NSFileManager.defaultManager setAttributes:@{NSFilePosixPermissions:@0700} ofItemAtPath:stub error:nil]);
+    __block NSString *detail=nil;
+    pane.agentFinished=^(TerminalView *source,NSString *tool,BOOL failed,NSString *summary) {
+        assert(source==pane && [tool isEqual:@"claude"] && !failed); detail=summary;
+    };
+    [pane showLocalAgent:@"claude"];
+    assert(pane.assistantVisible && session.tracksCommands && session==[pane valueForKey:@"session"]);
+    AssistantPanel *local=[pane valueForKey:@"assistant"];
+    NSTextField *task=[local valueForKey:@"input"]; task.stringValue=@"show progress";
+    [NSApp sendAction:task.action to:task.target from:task];
+    until(^BOOL{ return detail!=nil; });
+    assert([detail containsString:@"$ pwd"] && [detail containsString:@"WORKING-DIRECTORY"] && [detail containsString:@"TASK-FINISHED"]);
+    pane.agentFinished=nil;
+    SetTerminalPreference(LocalAgentLauncher,NO);
+    assert(!pane.assistantVisible && !session.tracksCommands);
+    for (NSString *key in @[AIErrorExplanations,BuiltInAgent,LocalAgentLauncher]) SetTerminalPreference(key,YES);
     [pane stop];
     puts("Output: listing formats, real ls/df/git, table toggles, reflow, historical cwd and Command-hover for file, plain and OSC 8 links OK");
 }

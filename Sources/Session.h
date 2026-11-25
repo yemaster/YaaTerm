@@ -3,7 +3,10 @@
 @interface Session : NSObject
 @property (copy) void (^onData)(const void *, size_t);
 @property (copy) void (^onExit)(void);
-@property (copy) NSString *launchAgent;
+@property (nonatomic) BOOL tracksCommands;
+- (NSString *)submitLine:(NSString *)line execute:(BOOL)execute acknowledged:(void (^)(BOOL))reply;
+- (void)acknowledgeLine:(NSString *)identifier accepted:(BOOL)accepted;
+- (void)discardPendingLine;
 @property (readonly) NSString *shellName, *commandExitToken;
 - (BOOL)startAt:(NSString *)directory cols:(int)cols rows:(int)rows error:(NSError **)error;
 - (void)resizeCols:(int)cols rows:(int)rows;

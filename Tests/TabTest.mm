@@ -985,6 +985,11 @@ int main() {
         assert(![[bar valueForKey:@"more"] isHidden]);
         NSButton *gear = [bar valueForKey:@"settings"], *add = [bar valueForKey:@"add"];
         NSButton *bell = [bar valueForKey:@"bell"];
+        CGFloat narrowWidth=NSWidth(items[0].frame);
+        SetTerminalPreference(BuiltInAgent,NO); [bar layoutSubtreeIfNeeded];
+        assert(![bar valueForKey:@"agent"] && NSWidth(items[0].frame)>narrowWidth);
+        SetTerminalPreference(BuiltInAgent,YES); [bar layoutSubtreeIfNeeded];
+        assert([bar valueForKey:@"agent"] && NSWidth(items[0].frame)==narrowWidth);
         assert(gear.image && bell.image && NSMaxX(bell.frame)+8==NSMaxX(bar.bounds));
         assert(NSMaxX(add.frame)<=NSMinX(gear.frame) && NSMaxX(gear.frame)<NSMinX(bell.frame));
         [bar selectIndex:0]; [bar layoutSubtreeIfNeeded]; assert(items[0].tag == 0);

@@ -6,6 +6,7 @@
 #include <pwd.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <util.h>
 #include <string>
@@ -17,18 +18,18 @@
     dispatch_source_t _reader, _writer;
     NSMutableData *_pending;
     NSUInteger _sent;
-    NSString *_shellName;
+    NSString *_shellName, *_controlDirectory, *_pendingID;
+    void (^_acknowledgement)(BOOL);
+    BOOL _tracksCommands, _directoryCreated;
 }
 - (instancetype)init {
-    if ((self = [super init])) _fd = -1;
+    if ((self = [super init])) { _fd = -1; _tracksCommands=YES; }
     return self;
 }
 - (NSString *)shellName { return _shellName; }
 - (BOOL)startAt:(NSString *)directory cols:(int)cols rows:(int)rows error:(NSError **)error {
     NSMutableDictionary *env = [NSProcessInfo.processInfo.environment mutableCopy];
-    NSString *agent = [@[@"codex",@"claude",@"agy",@"qodercn",@"omp"] containsObject:_launchAgent ?: @""] ? _launchAgent : nil;
-    env[@"YAATERM_LAUNCH_AGENT"] = agent;
-    NSString *shell = agent ? @"/bin/zsh" : env[@"SHELL"];
+    NSString *shell = env[@"SHELL"];
     if (![shell hasPrefix:@"/"] || ![NSFileManager.defaultManager isExecutableFileAtPath:shell]) {
         struct passwd *account = getpwuid(getuid());
         shell = account && account->pw_shell[0] ? [NSString stringWithUTF8String:account->pw_shell] : @"/bin/zsh";
@@ -42,6 +43,9 @@
         NSString *bootstrap = [NSBundle.mainBundle pathForResource:@".zshenv" ofType:nil inDirectory:@"Shell/zsh"];
         if (bootstrap) {
             _commandExitToken = NSUUID.UUID.UUIDString;
+            _controlDirectory=[NSTemporaryDirectory() stringByAppendingPathComponent:[@"yaaterm-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+            env[@"YAATERM_COMMAND_DIR"]=_controlDirectory;
+            [self setTracksCommands:_tracksCommands];
             env[@"YAATERM_EXIT_TOKEN"] = _commandExitToken;
             env[@"YAATERM_ORIGINAL_ZDOTDIR"] = env[@"ZDOTDIR"];
             env[@"ZDOTDIR"] = bootstrap.stringByDeletingLastPathComponent;
@@ -60,6 +64,7 @@
     _pid = forkpty(&_fd, nullptr, nullptr, &ws);
     if (_pid < 0) {
         int code = errno; _fd = -1;
+        [self close];
         if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:code userInfo:nil];
         return NO;
     }
@@ -147,7 +152,46 @@
 - (BOOL)shellIsForeground {
     return _fd >= 0 && _pid > 0 && !_pending && tcgetpgrp(_fd) == _pid;
 }
+- (BOOL)tracksCommands { return _tracksCommands; }
+- (void)setTracksCommands:(BOOL)enabled {
+    _tracksCommands=enabled;
+    if (!_controlDirectory) return;
+    if (enabled && !_directoryCreated) _directoryCreated=mkdir(_controlDirectory.fileSystemRepresentation,0700)==0;
+    if (!enabled && _directoryCreated) {
+        [self discardPendingLine]; rmdir(_controlDirectory.fileSystemRepresentation); _directoryCreated=NO;
+    }
+}
+- (void)discardPendingLine {
+    if (_pendingID) unlink([_controlDirectory stringByAppendingPathComponent:@"line"].fileSystemRepresentation);
+    _pendingID=nil; _acknowledgement=nil;
+}
+- (void)acknowledgeLine:(NSString *)identifier accepted:(BOOL)accepted {
+    if (!_pendingID || ![_pendingID isEqual:identifier]) return;
+    void (^reply)(BOOL)=_acknowledgement;
+    [self discardPendingLine]; if (reply) reply(accepted);
+}
+- (NSString *)submitLine:(NSString *)line execute:(BOOL)execute acknowledged:(void (^)(BOOL))reply {
+    if (!_directoryCreated || _pendingID || ![self shellIsForeground] || !line.length || line.length>16384 ||
+        [line rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location!=NSNotFound ||
+        [line rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location!=NSNotFound) return nil;
+    NSString *identifier=NSUUID.UUID.UUIDString;
+    NSString *packet=[NSString stringWithFormat:@"%@\n%@\n%@\n",identifier,execute ? @"run" : @"fill",line];
+    NSString *path=[_controlDirectory stringByAppendingPathComponent:@"line"];
+    if (![[packet dataUsingEncoding:NSUTF8StringEncoding] writeToFile:path options:NSDataWritingWithoutOverwriting error:nil]) return nil;
+    _pendingID=identifier; _acknowledgement=[reply copy];
+    // Only the shell's line-editor widget receives the command. No Return is sent to the PTY.
+    static const char key[]="\033[99;7~";
+    [self sendBytes:key length:sizeof(key)-1];
+    __weak Session *weak=self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{
+        [weak acknowledgeLine:identifier accepted:NO];
+    });
+    return identifier;
+}
 - (void)close {
+    [self discardPendingLine];
+    if (_directoryCreated) { rmdir(_controlDirectory.fileSystemRepresentation); _directoryCreated=NO; }
+    _controlDirectory=nil;
     _pending = nil; _sent = 0;
     if (_writer) { dispatch_source_cancel(_writer); _writer = nil; }
     if (_reader) { dispatch_source_cancel(_reader); _reader = nil; }

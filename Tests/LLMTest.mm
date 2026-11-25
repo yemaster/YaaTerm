@@ -3,6 +3,7 @@
 #import "AssistantPanel.h"
 #import <objc/runtime.h>
 #import "SettingsView.h"
+#import "Preferences.h"
 #import <Security/Security.h>
 #include <cassert>
 #include <initializer_list>
@@ -173,6 +174,12 @@ static void checkForm() {
     reopened.endpoint.stringValue = @"https://other.invalid/v1";
     click([reopened valueForKey:@"test"]);
     assert([[(NSTextField *)[reopened valueForKey:@"status"] stringValue] containsString:@"重新输入"]);
+    SetTerminalPreference(AIErrorExplanations,NO);
+    assert([settings valueForKey:@"apiForm"]==form);
+    SetTerminalPreference(BuiltInAgent,NO);
+    assert(![settings valueForKey:@"apiForm"] && !form.superview && savedRecord);
+    SetTerminalPreference(BuiltInAgent,YES); SetTerminalPreference(AIErrorExplanations,YES);
+    assert([settings valueForKey:@"apiForm"]!=form);
 }
 @interface FixtureConfig (AssistantTest)
 + (void)loadFixture:(void (^)(LLMConfiguration *,NSString *))completion;
@@ -216,19 +223,30 @@ static void checkAssistant() {
     IMP original=method_setImplementation(saved,method_getImplementation(class_getClassMethod(FixtureConfig.class,@selector(loadFixture:))));
     AssistantPanel *panel=[[AssistantPanel alloc] initWithDirectory:dir shell:@"zsh"];
     __block BOOL completed=NO; __block int proposals=0;
-    panel.onComplete=^(NSString *summary){ assert([summary isEqual:@"已核对"]); completed=YES; };
-    panel.onInsert=^BOOL(NSString *cmd){ ++proposals; return [cmd isEqual:@"wc -l sample.txt"]; };
+    panel.onComplete=^(NSString *summary, BOOL failed){ assert(!failed && [summary isEqual:@"已核对"]); completed=YES; };
+    __weak AssistantPanel *owner=panel;
+    panel.onShellLine=^BOOL(NSString *cmd, BOOL execute){
+        assert(execute);
+        NSDictionary *outputs=@{@"command yaa-inspect list '.'":@"sample.txt",
+            @"command yaa-inspect read 'shortcut'":@"无法打开该路径。",@"command yaa-inspect read 'sample.txt'":@"alpha"};
+        NSString *output=outputs[cmd];
+        if (!output) { ++proposals; return [cmd isEqual:@"wc -l sample.txt"]; }
+        dispatch_async(dispatch_get_main_queue(),^{
+            [owner receivedResult:@{@"command":cmd,@"status":@([cmd containsString:@"shortcut"]),@"output":output}];
+        });
+        return YES;
+    };
     scriptedReply=^NSDictionary *(NSDictionary *body) {
         NSString *input=[body[@"messages"] lastObject][@"content"];
         NSDictionary *task=[NSJSONSerialization JSONObjectWithData:[input dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
         NSArray *steps=task[@"steps"]; NSString *json;
         switch (steps.count) {
             case 0: json=@"{\"action\":\"list\",\"path\":\".\"}"; break;
-            case 1: assert([steps[0][@"result"] containsString:@"sample.txt"]);
+            case 1: assert([steps[0][@"output"] containsString:@"sample.txt"]);
                 json=@"{\"action\":\"read\",\"path\":\"shortcut\"}"; break;
-            case 2: assert([steps[1][@"result"] containsString:@"无法"]);
+            case 2: assert([steps[1][@"output"] containsString:@"无法"]);
                 json=@"{\"action\":\"read\",\"path\":\"sample.txt\"}"; break;
-            case 3: assert([steps[2][@"result"] isEqual:@"alpha"]);
+            case 3: assert([steps[2][@"output"] isEqual:@"alpha"]);
                 json=@"{\"text\":\"统计行数\",\"command\":\"wc -l sample.txt\"}"; break;
             default: assert([steps.lastObject[@"output"] isEqual:@"1 sample.txt"]);
                 json=@"{\"text\":\"已核对\"}"; break;
@@ -238,7 +256,7 @@ static void checkAssistant() {
     NSTextField *input=[panel valueForKey:@"input"]; input.stringValue=@"核对文件"; click(input);
     NSButton *action=[panel valueForKey:@"action"];
     waitFor(^BOOL{ return !action.hidden; });
-    assert(!proposals && !completed && [action.title isEqual:@"填入终端"]);
+    assert(!proposals && !completed && [action.title isEqual:@"运行"]);
     for (CGFloat width : {620.,320.,185.}) {
         panel.frame=NSMakeRect(0,0,width,[panel heightForWidth:width]); [panel layoutSubtreeIfNeeded];
         assert(NSContainsRect(panel.bounds,input.frame) && NSContainsRect(panel.bounds,action.frame));

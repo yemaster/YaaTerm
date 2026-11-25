@@ -55,7 +55,7 @@ NSString *SettingsSectionTitle(NSInteger section) { return @[@"通用",@"外观"
 enum SettingID : NSInteger {
     EndedSession, History, TabMotion, CommandAlerts, Mode, FontFamily, FontWeight, FontSize, LightTheme, DarkTheme, Material,
     BackOpacity, WallpaperFile, ImageOpacity, APIFormat, APIEndpoint, APIKey, APIModel, APIActions, IdleSleep, Tables, WebLinks, FileLinks,
-    AppVersion, AutoCheck, AutoInstall, CheckNow, Repository, Feedback, ReleaseNotes, SettingCount
+    AppVersion, AutoCheck, AutoInstall, CheckNow, Repository, Feedback, ReleaseNotes, ErrorHelp, AgentInput, LocalLauncher, SettingCount
 };
 struct SettingInfo { SettingsSection section; NSString *key, *name, *group, *help; };
 static const SettingInfo &setting(SettingID index) {
@@ -89,7 +89,10 @@ static const SettingInfo &setting(SettingID index) {
         {AboutSection,@"CheckNow",@"检查更新",@"软件更新",nil},
         {AboutSection,@"Repository",@"GitHub 仓库",@"项目",nil},
         {AboutSection,@"Feedback",@"意见反馈",@"项目",nil},
-        {AboutSection,@"ReleaseNotes",@"更新日志",@"版本记录",nil}
+        {AboutSection,@"ReleaseNotes",@"更新日志",@"版本记录",nil},
+        {APISection,AIErrorExplanations,@"命令错误解释",@"终端功能",nil},
+        {APISection,BuiltInAgent,@"内置 Agent",@"终端功能",nil},
+        {APISection,LocalAgentLauncher,@"本机 Agent",@"终端功能",nil}
     };
     return entries[index];
 }
@@ -695,6 +698,10 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
         for (NSInteger i=0; i<alerts.numberOfItems; ++i) [alerts itemAtIndex:i].tag = i;
         [alerts sizeToFit]; [alerts selectItemWithTag:[TerminalPreferences() integerForKey:CommandNoticesKey]];
     } else if (section == APISection) {
+        [self addSwitch:ErrorHelp]; [self addSwitch:AgentInput]; [self addSwitch:LocalLauncher];
+        if (![TerminalPreferences() boolForKey:AIErrorExplanations] && ![TerminalPreferences() boolForKey:BuiltInAgent]) {
+            _apiForm = nil; [self finishPage]; return;
+        }
         if (!_apiForm) {
             _apiForm = [[LLMSettingsForm alloc] initWithFrame:NSZeroRect];
             __weak SettingsView *owner = self;
@@ -729,7 +736,9 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
     [self clearPage]; _showingResults = YES;
     for (SectionButton *button : _sections) button.chosen = NO;
     _heading = [self addHeading:@"搜索结果" fontSize:23];
+    BOOL modelSettings=[TerminalPreferences() boolForKey:AIErrorExplanations] || [TerminalPreferences() boolForKey:BuiltInAgent];
     for (NSInteger i=0; i<SettingCount; ++i) {
+        if (!modelSettings && i>=APIFormat && i<=APIActions) continue;
         const auto &info = setting((SettingID)i);
         if (!info.name.length) continue;
         NSString *section = SettingsSectionTitle(info.section);
@@ -810,6 +819,12 @@ static constexpr CGFloat cardHeight = 86, cardGap = 8, minCardWidth = 138;
 }
 - (void)preferenceChanged:(NSNotification *)note {
     NSString *key = note.object;
+    if ([key isEqual:AIErrorExplanations] || [key isEqual:BuiltInAgent]) {
+        BOOL show = [TerminalPreferences() boolForKey:AIErrorExplanations] || [TerminalPreferences() boolForKey:BuiltInAgent];
+        if (_selection==APISection && !_showingResults && show!=(_apiForm!=nil)) { [self displaySection:APISection]; return; }
+        if (!show) { [_apiForm cancelTest]; _apiForm=nil; }
+        if (_showingResults) { [self searchChanged:_search]; return; }
+    }
     if ([key isEqual:TerminalColorScheme]) { [self applyPalette]; return; }
     if ([key isEqual:LightSchemeKey]) { [_light syncSelection]; return; }
     if ([key isEqual:DarkSchemeKey]) { [_dark syncSelection]; return; }

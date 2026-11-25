@@ -17,10 +17,16 @@ _yaaterm_command_start() {
     setopt extendedglob
     _yaaterm_job=''
     # Mark the output boundary before filtering builtins and unknown command names.
-    _yaaterm_ai_line=${1[1,384]}
-    _yaaterm_ai_line=${_yaaterm_ai_line//[[:cntrl:]]/␣}
-    (( ${#1} > 384 )) && _yaaterm_ai_line+=…
-    builtin printf '\033]777;yaaterm-begin;%s;\007' "$_yaaterm_exit_token" > "$TTY"
+    if [[ -d $_yaaterm_ai_dir ]]; then
+        _yaaterm_ai_line=${1[1,384]}
+        _yaaterm_ai_line=${_yaaterm_ai_line//[[:cntrl:]]/␣}
+        (( ${#1} > 384 )) && _yaaterm_ai_line+=…
+        builtin printf '\033]777;yaaterm-begin;%s;%s\007' "$_yaaterm_exit_token" "$_yaaterm_next_id" > "$TTY"
+    fi
+    if [[ -n $_yaaterm_next_id ]]; then
+        _yaaterm_next_id=''
+        return 0  # The owning assistant reports completion for this command.
+    fi
     local line=${2##[[:space:]]#}
     [[ -n $line && $line != *('&'|'&!'|'&|') ]] || return 0
     local -a words=(${(z)line})
@@ -150,7 +156,7 @@ _yaaterm_command_start() {
 _yaaterm_command_end() {
     local code=$?
     emulate -L zsh
-    builtin printf '\033]777;yaaterm-end;%s;%d;%s\007' "$_yaaterm_exit_token" "$code" "$_yaaterm_ai_line" > "$TTY"
+    [[ -d $_yaaterm_ai_dir ]] && builtin printf '\033]777;yaaterm-end;%s;%d;%s\007' "$_yaaterm_exit_token" "$code" "$_yaaterm_ai_line" > "$TTY"
     _yaaterm_ai_line=''
     _yaaterm_prompt_context
     local name=$_yaaterm_job
@@ -172,16 +178,35 @@ preexec_functions+=(_yaaterm_command_start)
 precmd_functions=(_yaaterm_command_end "${precmd_functions[@]}")
 
 _yaaterm_prompt_context
-builtin printf '\033]777;yaaterm-end;%s;0;\007' "$_yaaterm_exit_token" > "$TTY"
+[[ -d $_yaaterm_ai_dir ]] && builtin printf '\033]777;yaaterm-end;%s;0;\007' "$_yaaterm_exit_token" > "$TTY"
 
-# Launch only in the newly created tab, after the login profile and line editor are ready.
-if [[ $_yaaterm_launch_agent == (codex|claude|agy|qodercn|omp) ]]; then
-    autoload -Uz add-zle-hook-widget
-    _yaaterm_launch_once() {
-        add-zle-hook-widget -d line-init _yaaterm_launch_once
-        BUFFER=$_yaaterm_launch_agent
-        unset _yaaterm_launch_agent
+# The private key carries no text. A pending line can only be claimed by ZLE at an empty primary prompt.
+_yaaterm_input_widget() {
+    emulate -L zsh
+    local id op line ok=0
+    [[ -f $_yaaterm_ai_dir/line ]] || return 0
+    { IFS= builtin read -r id && IFS= builtin read -r op && IFS= builtin read -r line } < "$_yaaterm_ai_dir/line" || return 0
+    zmodload -F zsh/files b:zf_rm && zf_rm -- "$_yaaterm_ai_dir/line" 2>/dev/null || return 0
+    if [[ -z $BUFFER && $CONTEXT == start && -n $line && $line != *[[:cntrl:]]* && $op == (run|fill) ]]; then
+        ok=1
+        if [[ $line == 'command yaa-agent '* ]]; then
+            builtin hash "yaa-agent=$_yaaterm_agents_dir/yaa-agent"
+        elif [[ $line == 'command yaa-inspect '* ]]; then
+            builtin hash "yaa-inspect=$_yaaterm_inspector"
+        fi
+        BUFFER=$line CURSOR=${#line}
+    fi
+    builtin printf '\033]777;yaaterm-input;%s;%s;%d\007' "$_yaaterm_exit_token" "$id" "$ok" > "$TTY"
+    if (( ok )) && [[ $op == run ]]; then
+        _yaaterm_next_id=$id
+        zle -R
         zle .accept-line
-    }
-    add-zle-hook-widget line-init _yaaterm_launch_once
-fi
+    fi
+    return 0
+}
+typeset -g _yaaterm_inspector=${${(%):-%x}:A:h:h:h:h}/Helpers/yaa-inspect
+zle -N _yaaterm_input_widget
+for _yaaterm_map in emacs viins vicmd; do
+    bindkey -M "$_yaaterm_map" $'\e[99;7~' _yaaterm_input_widget
+done
+unset _yaaterm_map

@@ -1,8 +1,8 @@
 # YaaTerm sets ZDOTDIR only long enough to install this one-shot prompt hook.
 # Keep exit records on this PTY separate from notifications printed by its children.
 typeset -g _yaaterm_exit_token=${YAATERM_EXIT_TOKEN-}
-typeset -g _yaaterm_launch_agent=${YAATERM_LAUNCH_AGENT-}
-unset YAATERM_EXIT_TOKEN YAATERM_LAUNCH_AGENT
+typeset -g _yaaterm_ai_dir=${YAATERM_COMMAND_DIR-}
+unset YAATERM_EXIT_TOKEN YAATERM_COMMAND_DIR
 typeset -g _yaaterm_zsh_dir=${${(%):-%x}:A:h}
 if (( ${+YAATERM_ORIGINAL_ZDOTDIR} )); then
     export ZDOTDIR=$YAATERM_ORIGINAL_ZDOTDIR
