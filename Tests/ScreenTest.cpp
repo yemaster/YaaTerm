@@ -7,6 +7,26 @@
 
 using namespace yaa;
 using namespace std::string_view_literals;
+static void checkAsciiOverwrite() {
+    // The UK G0 character set takes the individual-glyph path; only '#' maps
+    // differently. Compare every possible overwrite through styled wide cells.
+    for (int x=0; x<16; ++x) for (int length=1; length<=17; ++length) {
+        Screen fast(16,3), scalar(16,3);
+        scalar.feed("\033(A");
+        auto feed = [&](std::string_view s) { fast.feed(s); scalar.feed(s); };
+        feed(u8"AB中C👩‍💻D中EFGH中!");
+        feed("\033[1;"+std::to_string(x+1)+"H\033[32;44m");
+        feed(std::string(length,'x')+"\177\xcc\x81");
+        assert(fast.x()==scalar.x() && fast.y()==scalar.y());
+        for (int y=0; y<3; ++y) {
+            auto &a=fast.row(y), &b=scalar.row(y);
+            assert(a.written==b.written && a.wrapAt==b.wrapAt);
+            for (int i=0; i<16; ++i)
+                assert(a[i].ch==b[i].ch && a[i].width==b[i].width && a[i].mark==b[i].mark && a[i].style==b[i].style);
+        }
+    }
+}
+
 static void checkScrollOrder() {
     Screen s(8,5);
     auto expect = [&](std::string_view firstColumn) {
@@ -161,6 +181,7 @@ static void checkFailureAnchor() {
 int main() {
     setlocale(LC_CTYPE,"en_US.UTF-8");
     checkFreeze();
+    checkAsciiOverwrite();
     checkScrollOrder();
     checkFailureAnchor();
     checkAgentFrames();

@@ -13,6 +13,20 @@ namespace {
 struct PackedRowHeader { uint16_t columns, used; };
 struct PackedBlockHeader { uint32_t plain, stored; };
 constexpr size_t blockLimit = 64 * 1024;
+
+size_t printableRun(const char *data, size_t limit) {
+    size_t n = 0;
+    // For eight printable ASCII bytes these operations never carry between
+    // bytes. A control, DEL or non-ASCII byte sets at least one high bit.
+    while (limit-n >= 8) {
+        uint64_t word;
+        memcpy(&word,data+n,sizeof(word));
+        if ((word | (word-0x2020202020202020ULL) | (word+0x0101010101010101ULL)) & 0x8080808080808080ULL) break;
+        n += 8;
+    }
+    while (n<limit && uint8_t(data[n])>=32 && uint8_t(data[n])<127) ++n;
+    return n;
+}
 }
 void Screen::freeze() {
     if (frozen()) return;
@@ -251,22 +265,24 @@ void Screen::scroll(int first, int last, bool up, bool save) {
         }
     }
     Row &edge = b.row(up ? first : last);
-    Row spare = keep ? remember(std::move(edge)) : std::move(edge);
+    if (keep) edge = remember(std::move(edge));
+    edge.assign(cols,blank());
+    static_cast<RowMetadata &>(edge) = {};
     if (whole) {
         b.firstRow = b.slot(up ? 1 : last);
-    } else {
-        int begin = b.slot(first), end = b.slot(last);
-        if (begin<=end) {
-            auto from=b.rows.begin()+begin, to=b.rows.begin()+end;
-            if (up) std::move(from+1,to+1,from);
-            else std::move_backward(from,to,to+1);
-        } else if (up) {
-            for (int i=first; i<last; ++i) b.row(i) = std::move(b.row(i+1));
-        } else {
-            for (int i=last; i>first; --i) b.row(i) = std::move(b.row(i-1));
-        }
+        return;
     }
-    spare.assign(cols, blank()); static_cast<RowMetadata &>(spare) = {};
+    Row spare = std::move(edge);
+    int begin = b.slot(first), end = b.slot(last);
+    if (begin<=end) {
+        auto from=b.rows.begin()+begin, to=b.rows.begin()+end;
+        if (up) std::move(from+1,to+1,from);
+        else std::move_backward(from,to,to+1);
+    } else if (up) {
+        for (int i=first; i<last; ++i) b.row(i) = std::move(b.row(i+1));
+    } else {
+        for (int i=last; i>first; --i) b.row(i) = std::move(b.row(i-1));
+    }
     b.row(up ? last : first) = std::move(spare);
 }
 
@@ -886,17 +902,26 @@ void Screen::feed(std::string_view bytes) {
             auto &buffer = active();
             auto &cursor = buffer.cursor;
             auto &line = buffer.row(cursor.y);
-            // Fresh ASCII runs need no glyph lookup or wide-cell boundary repair.
-            if (!cursor.wrapPending && cursor.x>=line.written && cursor.x<writeColumns && cursor.charsets[cursor.shift]=='B') {
-                if (writingCodeLine || !cursor.x) line.codeLine = writingCodeLine;
-                size_t end = pos+std::min(bytes.size()-pos,(size_t)(writeColumns-cursor.x));
-                do {
-                    line[cursor.x++] = Cell{cursor.pen,c,0,1,writeTag};
-                    ++pos;
-                    if (pos==end) break;
-                    c = bytes[pos];
-                } while (c>=32 && c<127);
-                line.written = cursor.x;
+            if (!cursor.wrapPending && cursor.x<writeColumns && cursor.charsets[cursor.shift]=='B') {
+                const int start = cursor.x;
+                const char *input = bytes.data()+pos;
+                const int count = (int)printableRun(input,std::min(bytes.size()-pos,(size_t)(writeColumns-start)));
+                const int end = start+count;
+                if (writingCodeLine || !start || start<line.written) line.codeLine = writingCodeLine;
+                // Let writeGlyph repair partial wide glyphs using the same erase
+                // attributes and row metadata as individual character writes.
+                if (line[start].width==0 || (end<cols && line[end].width==0) ||
+                    (end==cols && line[end-1].width==2)) {
+                    for (int i=0; i<count; ++i) put(input[i]);
+                    pos += count;
+                    continue;
+                }
+                const auto pen = cursor.pen;
+                const auto tag = writeTag;
+                for (int i=0; i<count; ++i) line[start+i] = Cell{pen,(uint8_t)input[i],0,1,tag};
+                pos += count;
+                cursor.x = end;
+                line.written = std::max<int>(line.written,end);
                 line.agentStamp = alternate ? 0 : agentStamp;
                 if (cursor.x==writeColumns) { cursor.wrapPending = true; --cursor.x; }
                 graphicAdjacent = true;
