@@ -5,6 +5,41 @@
 #import <QuartzCore/QuartzCore.h>
 
 NSNotificationName const TaskNoticesChanged = @"YaaTerm.TaskNoticesChanged";
+// The notification payload is already bounded by the terminal parser. Prefer an explicit
+// summary when present, otherwise take a readable excerpt of the final response.
+NSString *AgentNoticeSummary(NSString *reply) {
+    if (!reply.length) return nil;
+    auto pattern = [](NSString *s) { return [NSRegularExpression regularExpressionWithPattern:s options:0 error:nil]; };
+    static NSRegularExpression *escape = pattern(@"\\x1B(?:\\[[0-?]*[ -/]*[@-~]|\\][^\\x07\\x1B]*(?:\\x07|\\x1B\\\\|$))");
+    static NSRegularExpression *fence = pattern(@"(?ms)^[ \\t]*(`{3,}|~{3,})[^\\n]*\\n.*?(?:^[ \\t]*\\1[ \\t]*$|\\z)");
+    static NSRegularExpression *heading = pattern(@"(?im)^[ \\t]*(?:#{1,6}[ \\t]+)?(?:\\*\\*)?(?:任务总结|总结|摘要|summary|tl;dr)(?:\\*\\*)?[ \\t]*(?:[:：][ \\t]*|$)");
+    static NSRegularExpression *nextHeading = pattern(@"(?m)^[ \\t]*#{1,6}[ \\t]+");
+    static NSRegularExpression *link = pattern(@"\\[([^]\\n]+)\\]\\([^()\\n]*\\)");
+    static NSRegularExpression *markup = pattern(@"(?m)^[ \\t]*(?:#{1,6}|[-*+])[ \\t]+|\\*\\*|`");
+    static NSRegularExpression *space = pattern(@"[\\s\\p{Cc}\\u202A-\\u202E\\u2066-\\u2069]+");
+    NSMutableString *text = [reply mutableCopy];
+    auto replace = [&](NSRegularExpression *regex, NSString *replacement) {
+        [regex replaceMatchesInString:text options:0 range:NSMakeRange(0,text.length) withTemplate:replacement];
+    };
+    replace(escape,@""); replace(fence,@"");
+    NSRange section = [heading rangeOfFirstMatchInString:text options:0 range:NSMakeRange(0,text.length)];
+    if (section.location!=NSNotFound && NSMaxRange(section)<text.length) {
+        [text deleteCharactersInRange:NSMakeRange(0,NSMaxRange(section))];
+        NSRange next = [nextHeading rangeOfFirstMatchInString:text options:0 range:NSMakeRange(0,text.length)];
+        if (next.location!=NSNotFound) [text deleteCharactersInRange:NSMakeRange(next.location,text.length-next.location)];
+    }
+    replace(link,@"$1"); replace(markup,@""); replace(space,@" ");
+    NSString *line = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!line.length) return nil;
+    if (line.length<=160) return line;
+    __block NSUInteger count = 0, end = line.length;
+    [line enumerateSubstringsInRange:NSMakeRange(0,line.length)
+        options:NSStringEnumerationByComposedCharacterSequences | NSStringEnumerationSubstringNotRequired
+        usingBlock:^(NSString *, NSRange range, NSRange, BOOL *stop) {
+            if (++count>160) { end = range.location; *stop = YES; }
+        }];
+    return end==line.length ? line : [[line substringToIndex:end] stringByAppendingString:@"…"];
+}
 static NSMutableArray<TaskNotice *> *inbox;
 static TaskNotice *pendingBanner;
 @implementation TaskNotice

@@ -3,6 +3,7 @@
 
 // Main-thread inbox. Only the short display strings outlive the emitting callback.
 extern NSNotificationName const TaskNoticesChanged;
+NSString *AgentNoticeSummary(NSString *reply);
 @interface TaskNotice : NSObject
 @property (readonly, weak) TerminalView *source;
 @property (readonly, weak) NSWindow *originWindow;

@@ -586,14 +586,36 @@ bool Screen::isAgentCommand(std::string_view name) {
            name=="qodercn" || name=="qoder-cn" || name=="qoderclicn" || name=="qodercli";
 }
 
-void Screen::finishAgentTurn(bool failed) {
+// Both OSC 7501 and our stop hooks carry free text as base64, outside the control stream.
+static std::string decodeNoticeText(std::string_view text) {
+    if (text.empty() || text.size()>2732) return {};
+    size_t padding = 0;
+    while (!text.empty() && text.back()=='=') { ++padding; text.remove_suffix(1); }
+    if (text.size()%4==1 || padding>2 || (padding && (text.size()+padding)%4)) return {};
+    std::string result;
+    result.reserve(text.size()*3/4);
+    unsigned bits = 0, available = 0;
+    for (char c : text) {
+        unsigned value;
+        if (c>='A' && c<='Z') value = c-'A';
+        else if (c>='a' && c<='z') value = c-'a'+26;
+        else if (c>='0' && c<='9') value = c-'0'+52;
+        else if (c=='+') value = 62;
+        else if (c=='/') value = 63;
+        else return {};
+        bits = (bits<<6)|value; available += 6;
+        if (available>=8) { available -= 8; result.push_back(char(bits>>available)); }
+    }
+    return result;
+}
+
+void Screen::finishAgentTurn(bool failed, std::string_view detail) {
     reportedTurn = true;
-    if (agentFinished) agentFinished(agentCommand,failed);
+    if (agentFinished) agentFinished(agentCommand,failed,detail);
 }
 
 void Screen::finishOSC() {
     state = Text;
-    if (truncated) return;
     std::string_view data(sequence);
     auto take = [&](char delimiter) {
         size_t end = data.find(delimiter);
@@ -602,6 +624,7 @@ void Screen::finishOSC() {
         return value;
     };
     auto code = take(';');
+    if (truncated && !(code=="9" && agentCommand=="codex")) return;
     if (code == "0" || code == "2") {
         if (title) title(data);
     } else if (code == "7" && !alternate && outputContext && data.substr(0,7) == "file://") {
@@ -615,21 +638,32 @@ void Screen::finishOSC() {
             if (reply) reply("\033]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth\033\\");
             return;
         }
-        std::string_view status;
+        std::string_view status, message;
         while (!data.empty()) {
             auto field = take(':');
             if (field.substr(0,6)=="state=") status = field.substr(6);
+            if (field.substr(0,4)=="msg=") message = field.substr(4);
         }
         if (status=="working") reportedTurn = false;
-        if ((status=="done" || status=="error") && !reportedTurn) finishAgentTurn(status=="error");
+        if ((status=="done" || status=="error") && !reportedTurn) finishAgentTurn(status=="error",decodeNoticeText(message));
     } else if (code == "9" && agentCommand=="codex" && !data.empty()) {
         // Numeric subcommands include progress (OSC 9;4); these are not notifications.
         auto prefix = data.substr(0,data.find(';'));
-        if (prefix.empty() || prefix.find_first_not_of("0123456789")!=prefix.npos) finishAgentTurn(false);
+        if (prefix.empty() || prefix.find_first_not_of("0123456789")!=prefix.npos) {
+            if (truncated) {
+                // A capped preview may end partway through a UTF-8 scalar.
+                size_t last = data.size()-1;
+                while (last && (uint8_t(data[last])&0xc0)==0x80) --last;
+                data = data.substr(0,last);
+            }
+            finishAgentTurn(false,data=="Agent turn complete" ? std::string_view{} : data);
+        }
     } else if (code == "777" && !commandExitToken.empty()) {
         auto event = take(';');
         if (event=="yaaterm-turn") {
-            if (!agentCommand.empty() && data==agentCommand && data!="agy" && data!="codex") finishAgentTurn(false);
+            auto agent = take(';');
+            if (!agentCommand.empty() && agent==agentCommand && agent!="agy" && agent!="codex")
+                finishAgentTurn(false,decodeNoticeText(data));
             return;
         }
         if (take(';') != commandExitToken) return;
@@ -687,7 +721,9 @@ void Screen::byte(uint8_t c) {
         else {
             state = osc ? OSC : Ignore;
             if (osc && c >= 32) {
-                if (sequence.size() < 2048) sequence += c; else truncated = true;
+                if (sequence.size()<2048 || (sequence.size()<4096 && agentCommand=="agy" && sequence.compare(0,5,"7501;")==0))
+                    sequence += c;
+                else truncated = true;
             }
         }
         return;

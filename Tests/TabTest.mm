@@ -831,12 +831,20 @@ static void checkWindowEdge() {
 static void checkNoticeEvents() {
     TabWorkspace *work = [[TabWorkspace alloc] initWithFrame:NSMakeRect(0,0,640,400)];
     [work addTab]; TerminalView *pane = work.focused;
+    assert([AgentNoticeSummary(@"背景\n```sh\n## 总结\nignore\n```\n**总结**：修复 [滚动](https://example.org)。\n- 测试已通过。\n## 后续\n稍后再做。")
+            isEqual:@"修复 滚动。 测试已通过。"]);
+    assert(!AgentNoticeSummary(@" \r\n "));
+    NSMutableString *longReply = [NSMutableString string];
+    for (int i=0;i<161;++i) [longReply appendString:@"👩‍💻"];
+    assert([AgentNoticeSummary(longReply) isEqual:[[longReply substringToIndex:160*[@"👩‍💻" length]] stringByAppendingString:@"…"]]);
     SetTerminalPreference(CommandNoticesKey,AgentOnly);
-    pane.agentFinished(pane,@"codex",NO);
+    pane.agentFinished(pane,@"codex",NO,@"## 结果\n已修复 `vim` 滚动。");
     assert(TaskNotice.unreadCount==1 && [TaskNotice.recent.firstObject.title isEqual:@"codex 任务完成"]);
+    assert([TaskNotice.recent.firstObject.summary containsString:@"已修复 vim 滚动。"]);
     [work splitVertical:YES];
-    pane.agentFinished(pane,@"claude",YES);
+    pane.agentFinished(pane,@"claude",YES,@"依赖安装失败。");
     assert(TaskNotice.unreadCount==2 && [TaskNotice.recent.firstObject.title isEqual:@"claude 任务失败"]);
+    assert([TaskNotice.recent.firstObject.summary isEqual:@"依赖安装失败。"]);
     pane.commandExited(pane,@"agy",0,1); // One-shot agent without a separate turn event.
     assert(TaskNotice.unreadCount==3 && TaskNotice.recent.firstObject.source==pane);
     [TaskNotice discardFor:pane];
@@ -868,7 +876,7 @@ static void checkNoticeEvents() {
     [TaskNotice.recent.firstObject open];
     assert(!work.showingSettings && work.focused==pane);
     [work selectIndex:1];
-    pane.agentFinished(pane,@"qodercn",NO);
+    pane.agentFinished(pane,@"qodercn",NO,nil);
     assert([TaskNotice.recent.firstObject.title isEqual:@"qodercn 任务完成"]);
     [TaskNotice.recent.firstObject open];
     assert(work.focused==pane);

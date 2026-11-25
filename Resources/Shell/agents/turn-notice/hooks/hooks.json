@@ -1,5 +1,5 @@
 {
   "hooks": {
-    "Stop": [{"hooks": [{"type": "command", "command": "if [ -c \"$YAATERM_NOTICE_TTY\" ]; then printf '\\033]777;yaaterm-turn;%s\\007' \"$YAATERM_NOTICE_AGENT\" > \"$YAATERM_NOTICE_TTY\"; fi"}]}]
+    "Stop": [{"hooks": [{"type": "command", "command": "if [ -r \"$YAATERM_NOTICE_HOOK\" ]; then exec /usr/bin/perl \"$YAATERM_NOTICE_HOOK\"; elif [ -c \"$YAATERM_NOTICE_TTY\" ]; then printf '\\033]777;yaaterm-turn;%s\\007' \"$YAATERM_NOTICE_AGENT\" > \"$YAATERM_NOTICE_TTY\"; fi"}]}]
   }
 }

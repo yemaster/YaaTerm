@@ -16,7 +16,8 @@ _yaaterm_run_agent() {
             fi
             ;&
         claude|qoderclicn|qodercli)
-            YAATERM_NOTICE_TTY=$TTY YAATERM_NOTICE_AGENT=$tool command "$tool" --plugin-dir "$_yaaterm_agents_dir/turn-notice" "$@" ;;
+            YAATERM_NOTICE_TTY=$TTY YAATERM_NOTICE_AGENT=$tool YAATERM_NOTICE_HOOK="$_yaaterm_agents_dir/turn-notice/hooks/stop.pl" \
+                command "$tool" --plugin-dir "$_yaaterm_agents_dir/turn-notice" "$@" ;;
         omp)
             local arg
             for arg in "$@"; do

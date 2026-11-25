@@ -252,11 +252,12 @@ static NSSize minPane(NSView *view) {
         TerminalTab *t = weakTab;
         if (t && t.focused == v) [t.owner showTitleFor:t];
     };
-    pane.agentFinished = ^(TerminalView *v, NSString *name, BOOL failed) {
+    pane.agentFinished = ^(TerminalView *v, NSString *name, BOOL failed, NSString *detail) {
         TerminalTab *t = weakTab;
         if (!t.owner) return;
         NSString *title = [name stringByAppendingString:failed ? @" 任务失败" : @" 任务完成"];
-        [TaskNotice postFrom:v window:t.owner.window title:title summary:failed ? @"回到会话查看错误。" : @"本轮任务已结束，点击查看回复。"];
+        NSString *summary = AgentNoticeSummary(detail) ?: (failed ? @"回到会话查看错误。" : @"本轮任务已结束，点击查看回复。");
+        [TaskNotice postFrom:v window:t.owner.window title:title summary:summary];
     };
     pane.commandExited = ^(TerminalView *v, NSString *name, int status, int seconds) {
         TerminalTab *t = weakTab;

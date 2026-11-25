@@ -58,7 +58,7 @@ public:
     void resetPresentation() { context = writeTag = main.link = alt.link = 0; }
     static bool isAgentCommand(std::string_view name);
     std::function<void(std::string_view,int,int)> commandExited;
-    std::function<void(std::string_view,bool)> agentFinished;
+    std::function<void(std::string_view,bool,std::string_view)> agentFinished;
     explicit Screen(int w, int h) {
         for (size_t col=8; col<tabs.size(); col+=8) tabs.set(col);
         resize(w,h);
@@ -119,7 +119,7 @@ private:
     void control(char c);
     std::string agentCommand;
     bool reportedTurn = false;
-    void finishAgentTurn(bool failed);
+    void finishAgentTurn(bool failed, std::string_view detail);
     void finishOSC();
     void mode(int n, bool enabled, bool priv);
 };

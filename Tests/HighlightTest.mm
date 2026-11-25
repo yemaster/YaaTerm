@@ -19,17 +19,17 @@ int main() {
         NSString *fixture = @R"SH(#!/bin/sh
 tool=${0##*/}
 case "$tool" in
-    agy) printf '\033]7501;state=working\007\033]7501;state=done:app=antigravity\007' ;;
+    agy) printf '\033]7501;state=working\007\033]7501;state=done:app=antigravity:msg=VGVzdHMgcGFzc2Vk\007' ;;
     codex)
         [ "$1" = -c ] && [ "$2" = 'tui.notifications=["agent-turn-complete"]' ] || exit 31
-        printf '\033]9;Turn complete\007' ;;
+        printf '\033]9;Tests passed\007' ;;
     omp)
         [ "$1" = --extension ] && [ -f "$2" ] || exit 32
-        printf '\033]777;yaaterm-turn;omp\007' ;;
+        printf '\033]777;yaaterm-turn;omp;VGVzdHMgcGFzc2Vk\007' ;;
     *)
         [ "$1" = --plugin-dir ] && [ "$YAATERM_NOTICE_AGENT" = "$tool" ] || exit 33
         hook=$(/usr/bin/plutil -extract hooks.Stop.0.hooks.0.command raw "$2/hooks/hooks.json") || exit 34
-        /bin/sh -c "$hook" || exit 35 ;;
+        printf '%s' '{"last_assistant_message":"Tests passed","transcript_path":"/missing"}' | /bin/sh -c "$hook" || exit 35 ;;
 esac
 printf '\033]2;waiting-%s\007' "$tool"
 read -r reply
@@ -89,8 +89,8 @@ read -r reply
         };
         int turns = 0;
         for (NSString *tool in @[@"agy",@"codex",@"omp",@"claude",@"qodercn"]) {
-            screen.agentFinished = [&](std::string_view agent,bool failed) {
-                assert(agent==tool.UTF8String && !failed); ++turns;
+            screen.agentFinished = [&](std::string_view agent,bool failed,std::string_view detail) {
+                assert(agent==tool.UTF8String && !failed && detail=="Tests passed"); ++turns;
             };
             int previous = turns;
             send([tool stringByAppendingString:@"\r"]);

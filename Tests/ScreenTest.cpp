@@ -217,7 +217,8 @@ int main() {
 
     int turns = 0;
     bool failed = false;
-    events.agentFinished = [&](std::string_view, bool error) { ++turns; failed = error; };
+    std::string detail;
+    events.agentFinished = [&](std::string_view, bool error, std::string_view body) { ++turns; failed = error; detail = body; };
     events.feed("\033]777;yaaterm-turn;omp\a\033]7501;state=done\a");
     assert(turns==0);
     events.feed("\033]777;yaaterm-agent;test-session;agy\a");
@@ -239,6 +240,21 @@ int main() {
     assert(turns==4 && !failed);
     events.feed("\033]777;yaaterm-agent;test-session;\a\033]9;unrelated\a");
     assert(turns==4);
+
+    events.feed("\033]777;yaaterm-agent;test-session;agy\a\033]7501;msg=VGVzdHMgcGFzc2Vk:state=done\a");
+    assert(turns==5 && detail=="Tests passed");
+    events.feed("\033]7501;state=working\a\033]7501;state=error:msg=$bad\a");
+    assert(turns==6 && failed && detail.empty());
+    events.feed("\033]777;yaaterm-agent;test-session;claude\a\033]777;yaaterm-turn;omp;d3Jvbmc=\a");
+    assert(turns==6);
+    events.feed("\033]777;yaaterm-turn;claude;5a6M5oiQ77ybT0s=\a");
+    assert(turns==7 && detail==u8"完成；OK");
+    events.feed("\033]777;yaaterm-turn;claude\a");
+    assert(turns==8 && detail.empty());
+    events.feed("\033]777;yaaterm-agent;test-session;codex\a\033]9;Fixed; tested\a");
+    assert(turns==9 && detail=="Fixed; tested");
+    events.feed("\033]9;" + std::string(2045,'x') + u8"✅more\a");
+    assert(turns==10 && detail==std::string(2045,'x'));
 
     Screen stress(100,32);
     std::string line = "\033[32m" + std::string(80,'x') + "\033[0m\r\n";

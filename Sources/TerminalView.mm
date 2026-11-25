@@ -133,11 +133,12 @@ static NSString *cellText(const Row &row, int start, int end, bool trim) {
                 if (v.didRename) v.didRename(v);
             }
         };
-        _screen->agentFinished = [weak](std::string_view name, bool failed) {
+        _screen->agentFinished = [weak](std::string_view name, bool failed, std::string_view detail) {
             TerminalView *pane = weak;
             if (pane.agentFinished) {
                 NSString *label = [[NSString alloc] initWithBytes:name.data() length:name.size() encoding:NSUTF8StringEncoding];
-                pane.agentFinished(pane,label,failed);
+                NSString *text = detail.empty() ? nil : [[NSString alloc] initWithBytes:detail.data() length:detail.size() encoding:NSUTF8StringEncoding];
+                pane.agentFinished(pane,label,failed,text);
             }
         };
         _screen->commandExited = [weak](std::string_view name, int status, int seconds) {

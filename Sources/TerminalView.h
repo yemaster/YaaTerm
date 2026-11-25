@@ -5,7 +5,7 @@
 @property (copy) void (^didFocus)(TerminalView *);
 @property (copy) void (^didRename)(TerminalView *);
 @property (copy) void (^revealTask)(TerminalView *);
-@property (copy) void (^agentFinished)(TerminalView *, NSString *name, BOOL failed);
+@property (copy) void (^agentFinished)(TerminalView *, NSString *name, BOOL failed, NSString *detail);
 @property (copy) void (^commandExited)(TerminalView *, NSString *name, int status, int seconds);
 @property (copy) void (^didExit)(TerminalView *);
 // Nonzero only while the workspace is monitoring this hidden pane.
