@@ -51,6 +51,14 @@ build/screen-test: Tests/ScreenTest.cpp $(GRID) Sources/TerminalSearch.cpp $(GRI
 	mkdir -p build
 	$(CXX) $(FLAGS) -lcompression -ISources Tests/ScreenTest.cpp $(GRID) Sources/TerminalSearch.cpp -o $@
 
+.PHONY: benchmark
+benchmark: build/scroll-benchmark
+	./build/scroll-benchmark
+
+build/scroll-benchmark: Tests/ScrollBenchmark.cpp $(GRID) $(GRID_HEADERS)
+	mkdir -p build
+	$(CXX) $(FLAGS) -lcompression -ISources Tests/ScrollBenchmark.cpp $(GRID) -o $@
+
 
 build/session-test: Tests/SessionTest.mm Sources/Session.mm Sources/Session.h
 	mkdir -p build
