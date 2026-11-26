@@ -7,7 +7,7 @@ npm ci
 npm run dev
 ```
 
-打开命令行打印的本机地址，路径为 `/YaaTerm/`。页面在 `src/`，导航与侧栏在 `.vitepress/config.ts`。首页直接引用仓库中的终端截图，性能页引用 `docs/performance.md`。
+打开命令行打印的本机地址，路径为 `/YaaTerm/`。页面在 `src/`，导航与侧栏在 `.vitepress/config.ts`。首页标志来自应用图标 `Resources/YaaTerm.icns`，性能页引用 `docs/performance.md`。
 
 ```sh
 npm run build

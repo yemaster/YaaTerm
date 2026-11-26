@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { withBase } from 'vitepress'
-import terminalWindow from '../../../docs/terminal.png'
+import logo from './yaaterm-logo.webp'
 
 const groups = [
   { title: '使用指南', links: [
@@ -29,9 +29,7 @@ const groups = [
         </div>
         <p class="requirements">macOS 13 及以上 · Apple Silicon 与 Intel</p>
       </div>
-      <figure class="terminal-stage">
-        <img :src="terminalWindow" width="1580" height="760" fetchpriority="high" alt="YaaTerm 中的文件列表和带行号的 Python 代码">
-      </figure>
+      <img class="intro-logo" :src="logo" width="512" height="512" alt="">
     </section>
     <div class="manual-index">
       <section v-for="group in groups" :key="group.title">
