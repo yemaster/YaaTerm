@@ -2,7 +2,7 @@
 
 YaaTerm 是一款轻量的 macOS 原生终端。用标签页和分屏组织会话，在终端里直接读表格、看代码，或让 Agent 在当前 shell 中逐条执行命令。
 
-[下载 macOS 版](https://github.com/yemaster/YaaTerm/releases/latest) · [使用指南](docs/usage.md) · [性能实测](docs/performance.md) · [反馈问题](https://github.com/yemaster/YaaTerm/issues)
+[下载 macOS 版](https://github.com/yemaster/YaaTerm/releases/latest) · [文档官网](https://yemaster.github.io/YaaTerm/) · [使用指南](docs/usage.md) · [性能实测](docs/performance.md) · [反馈问题](https://github.com/yemaster/YaaTerm/issues)
 
 <img src="docs/terminal.png" width="790" alt="YaaTerm 深色终端窗口中，ls 的文件表格和 cat 的带行号代码预览">
 
@@ -17,7 +17,7 @@ YaaTerm 是一款轻量的 macOS 原生终端。用标签页和分屏组织会�
 | 同时处理多个会话 | ⌘T 新建标签，⌘D 左右分屏，⇧⌘D 上下分屏。标签可分组、收起，也可以拖到另一扇窗口。 |
 | 阅读命令结果 | `ls -lh`、`docker ps`、`kubectl get pods` 等输出可切换表格与原始数据。`cat` 和 `nl` 支持代码高亮与行号。 |
 | 找回之前的输出 | ⌘F 或 Ctrl+F 搜索当前分屏的回滚。按住 ⌘ 点网址可打开浏览器，点文件路径可在 Finder 中定位。 |
-| 解释上一条报错 | 点错误旁的按钮或按 ⇧⌘E。解释显示在报错下方，建议命令可在当前提示符中编辑。 |
+| 解释刚执行的命令 | 按 ⇧⌘E 查看命令、参数与输出的含义。命令失败时也可以点报错旁的「命令解释」，在当前提示符中编辑建议命令。 |
 | 让 Agent 执行任务 | ⌘J 切到 `Agent >`，输入任务。命令显示在原分屏中，Enter 确认，Ctrl+C 取消。↑、↓ 翻阅任务历史。 |
 
 表格、代码预览和内置 Agent 使用 zsh 集成。首次使用 AI 时，按 ⌘, 打开「设置 → AI 服务」，填写接口、模型和密钥。命令解释、Agent 和输出增强都可以分别关闭。[配置与快捷键](docs/usage.md)

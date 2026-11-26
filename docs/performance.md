@@ -57,4 +57,4 @@ python3 Tests/compare/run.py
 make benchmark
 ```
 
-`run.py` 输出每种负载的吞吐、峰值 RSS 和 CPU 时间。使用 `--rounds` 或 `--repeats` 可调整样本量。[负载生成和结果校验](../Tests/compare/run.py) · [百万行回滚基准](../Tests/ScrollBenchmark.cpp)
+`run.py` 输出每种负载的吞吐、峰值 RSS 和 CPU 时间。使用 `--rounds` 或 `--repeats` 可调整样本量。[负载生成和结果校验](https://github.com/yemaster/YaaTerm/blob/master/Tests/compare/run.py) · [百万行回滚基准](https://github.com/yemaster/YaaTerm/blob/master/Tests/ScrollBenchmark.cpp)
