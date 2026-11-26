@@ -80,7 +80,8 @@ static NSString *cellText(const Row &row, int start, int end, bool trim) {
 }
 @end
 
-enum FixState { ExplainError, AnalyzingError, SendingExplanation, ShowExplanationAgain, ConfigureDiagnosis, RetryDiagnosis, CopySuggestion };
+enum FixState { ExplainCommand, AnalyzingError, SendingExplanation, ShowExplanationAgain, ConfigureDiagnosis, RetryDiagnosis, CopySuggestion };
+static NSString *const explanationTitles[]={@"命令解释",@"分析中",@"显示中",@"重新显示",@"配置 AI 服务",@"重试分析",@"复制建议"};
 @interface TerminalView () <NSTextFieldDelegate>
 @end
 
@@ -110,10 +111,10 @@ enum FixState { ExplainError, AnalyzingError, SendingExplanation, ShowExplanatio
     NSButton *_fixButton;
     CGFloat _fixLabelWidth;
     Cell _failureGlyph;
-    NSDictionary *_failure;
+    NSDictionary *_lastCommand;
     TerminalAssistant *_diagnosis;
     NSString *_explanation, *_suggestion, *_shownReason;
-    BOOL _previewPending;
+    BOOL _previewPending, _showFailureChip;
     FixState _fixState;
     DiagnosisFollowUp _followUp;
     uint64_t _commandSerial;
@@ -569,7 +570,7 @@ struct PaintedLine {
 }
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
-    if (_failure) [self updateFixButton];
+    if (_lastCommand) [self updateFixButton];
     if (_agentProgress) [self observeAgentProgress];
     if (self.window && _wakeOnActivity) [self wakeForActivity];
     if (_focusWindow || (_screen && _screen->focusReporting)) [self trackWindowFocus];
@@ -597,7 +598,7 @@ struct PaintedLine {
 }
 - (void)preferenceChanged:(NSNotification *)note {
     if ([note.object isEqual:ShortcutPreferences]) {
-        if (_failure) [self updateFixButton];
+        if (_lastCommand) [self updateFixButton];
         if (_session.agentInputID) [self updateReviewKeys];
         [_findBar refreshShortcuts]; return;
     }
@@ -627,7 +628,7 @@ struct PaintedLine {
     }
     if ([note.object isEqual:AIErrorExplanations] || [note.object isEqual:BuiltInAgent] || [note.object isEqual:LocalAgentLauncher]) {
         if ([note.object isEqual:_panelFeature] && ![TerminalPreferences() boolForKey:_panelFeature]) [self closeAssistant];
-        if (![TerminalPreferences() boolForKey:AIErrorExplanations]) [self clearFailure];
+        if (![TerminalPreferences() boolForKey:AIErrorExplanations]) [self clearLastCommand];
         [self configureCommandTracking]; return;
     }
     if ([note.object isEqual:TerminalColorScheme]) { [_findBar applyPalette]; _fixButton.contentTintColor=CurrentInterfacePalette().accent; self.needsDisplay = YES; }
@@ -662,6 +663,8 @@ struct PaintedLine {
     __weak TerminalView *weak=self;
     _screen->commandBegan=[weak](std::string_view identifier) {
         TerminalView *v=weak; if (!v) return;
+        bool parseError=!identifier.empty() && identifier.front()=='!';
+        if (parseError) identifier.remove_prefix(1);
         v->_commandSerial=0;
         if (!identifier.empty()) {
             uint64_t serial=0;
@@ -674,7 +677,9 @@ struct PaintedLine {
         if (v->_runningOwned) v->_screen->beginAgentOutput(); else v->_screen->endAgentBlock();
         v->_commandGeneration=v->_screen->historyGeneration;
         v->_commandRow=v->_screen->historySize()+v->_screen->y(); v->_commandColumn=v->_screen->x();
-        if (v->_failure) [v clearFailure];
+        // A rejected line never ran. Its parser diagnostic is immediately above precmd.
+        if (parseError && v->_commandRow>0 && !v->_commandColumn) --v->_commandRow;
+        if (v->_lastCommand) [v clearLastCommand];
     };
     _screen->promptReturned=[weak](int status,std::string_view line) { [weak promptReturned:status line:line]; };
     _screen->inputAccepted=[weak](std::string_view idBytes,bool accepted) {
@@ -684,17 +689,16 @@ struct PaintedLine {
         [v->_session acknowledgeLine:identifier accepted:accepted];
     };
 }
-- (void)clearFailure {
+- (void)clearLastCommand {
     [_diagnosis cancel]; _diagnosis=nil;
     if (_previewPending || _fixState==SendingExplanation) [_session discardPendingLine];
-    _previewPending=NO; _shownReason=nil;
-    _screen->failureCell={-1,0};
-    _fixState=ExplainError; _explanation=nil; _suggestion=nil; _failure=nil; [_fixButton removeFromSuperview]; _fixButton=nil;
+    _previewPending=NO; _lastCommand=nil;
+    [self finishExplanation];
 }
-- (BOOL)hasFailedCommand { return _failure!=nil; }
-- (NSString *)failureActionTitle {
-    if (!_failure || _fixState==SendingExplanation) return nil;
-    return _fixState==AnalyzingError ? @"取消分析" : _fixButton.title;
+- (BOOL)hasFailedCommand { return _showFailureChip; }
+- (NSString *)explanationActionTitle {
+    if (!_lastCommand || _fixState==SendingExplanation) return nil;
+    return _fixState==AnalyzingError ? @"取消分析" : explanationTitles[_fixState];
 }
 - (void)promptReturned:(int)status line:(std::string_view)line {
     uint16_t outputStamp=_screen->agentOutputStamp();
@@ -705,8 +709,9 @@ struct PaintedLine {
     _insideCommand=_runningOwned=_approvalSent=NO;
     if (owned) _issuedID=nil;
     BOOL awaiting=owned && _assistant.expectedCommand!=nil;
-    BOOL failed=_diagnostics && !_assistant && _commandSerial && !awaiting && status && status!=130 && status!=128+SIGTSTP && !line.empty();
-    if (!began || (!awaiting && !failed)) return;
+    BOOL explainable=_diagnostics && !_assistant && _commandSerial && !line.empty();
+    if (!began || (!awaiting && !explainable)) return;
+    BOOL failed=explainable && status!=0 && status!=130 && status!=128+SIGTSTP;
     NSString *command=awaiting ? _assistant.expectedCommand :
         [[NSString alloc] initWithBytes:line.data() length:line.size() encoding:NSUTF8StringEncoding] ?: @"";
     NSMutableArray *rows=[NSMutableArray array];
@@ -737,7 +742,8 @@ struct PaintedLine {
     }
     NSDictionary *record=@{@"command":command,@"status":@(status),@"output":output};
     if (awaiting) _agentResult=record; // Deliver after the same zsh prompt is ready for the next step.
-    if (failed && command.length) {
+    if (explainable) _lastCommand=record;
+    if (failed) {
         // A silent failure belongs to the echoed command. The start may have scrolled
         // away with history disabled, or moved when the user resized the pane.
         if (anchor.row<0) {
@@ -754,15 +760,15 @@ struct PaintedLine {
             if (anchor.column>0 && !row[anchor.column].width) --anchor.column;
             _failureGlyph=row[anchor.column];
         }
-        _screen->failureCell=anchor; _failure=record;
-        [self setFixState:ExplainError];
+        _screen->failureCell=anchor; _showFailureChip=YES;
+        [self setFixState:ExplainCommand];
     }
 }
 - (void)setFixState:(FixState)state {
     _fixState=state; [self updateFixButton];
 }
 - (void)updateFixButton {
-    if (!self.window) { [_fixButton removeFromSuperview]; _fixButton=nil; return; }
+    if (!self.window || !self.hasFailedCommand) { [_fixButton removeFromSuperview]; _fixButton=nil; return; }
     if (!_fixButton) {
         _fixButton=[NSButton buttonWithTitle:@"" target:self action:@selector(explainFailure:)];
         _fixButton.bordered=NO; _fixButton.controlSize=NSControlSizeSmall;
@@ -772,12 +778,11 @@ struct PaintedLine {
         _fixButton.contentTintColor=CurrentInterfacePalette().accent;
         [self addSubview:_fixButton];
     }
-    static NSString *const titles[]={@"解释错误",@"分析中",@"显示中",@"重新显示",@"配置 AI 服务",@"重试分析",@"复制建议"};
     static NSString *const icons[]={@"text.magnifyingglass",@"stop.circle",@"ellipsis",@"arrow.clockwise",@"slider.horizontal.3",@"arrow.clockwise",@"doc.on.doc"};
     FixState state=_fixState;
-    _fixButton.title=titles[state];
+    _fixButton.title=explanationTitles[state];
     _fixButton.image=[NSImage imageWithSystemSymbolName:icons[state] accessibilityDescription:nil];
-    _fixButton.toolTip=ShortcutTip(state==AnalyzingError ? @"取消分析" : titles[state],ExplainKey);
+    _fixButton.toolTip=ShortcutTip(state==AnalyzingError ? @"取消分析" : explanationTitles[state],ExplainKey);
     [_fixButton setAccessibilityLabel:_fixButton.toolTip];
     _fixButton.enabled=state!=SendingExplanation;
     _fixButton.imagePosition=NSImageLeading;
@@ -901,7 +906,7 @@ struct PaintedLine {
     }
     if (_assistant && (![_panelFeature isEqual:feature] || (tool && ![tool isEqual:_localTool]))) [self closeAssistant];
     if (!_assistant) {
-        [self clearFailure];
+        [self clearLastCommand];
         _panelFeature=feature; _localTool=[tool copy];
         _assistant=[[TerminalAssistant alloc] initWithDirectory:_session.workingDirectory shell:_session.shellName];
         _assistant.localTool=tool;
@@ -993,12 +998,18 @@ struct PaintedLine {
         if (pane->_explanation) [pane deliverExplanation];
     }];
 }
+- (void)finishExplanation {
+    // Dismiss the inline action; the last command remains available from the menu.
+    _showFailureChip=NO; _screen->failureCell={-1,0};
+    _fixState=ExplainCommand; _explanation=nil; _suggestion=nil; _shownReason=nil;
+    [_fixButton removeFromSuperview]; _fixButton=nil;
+}
 - (void)deliverExplanation {
     __weak TerminalView *weak=self;
     [self setFixState:SendingExplanation];
     if (_previewPending) return;
     NSString *remaining=[_explanation isEqual:_shownReason] && _followUp==DiagnosisDone ? nil : _explanation;
-    if (!remaining && !_suggestion.length) { [self clearFailure]; return; }
+    if (!remaining && !_suggestion.length) { [self finishExplanation]; return; }
     BOOL sent=!_insideCommand && !_screen->alternate && _screen->bracketPaste &&
         [_session showDiagnosis:remaining suggestion:_suggestion sequence:_commandSerial acknowledged:^(BOOL shown) {
             TerminalView *pane=weak;
@@ -1008,23 +1019,23 @@ struct PaintedLine {
             if (pane->_followUp==DiagnosisConfigure) [pane setFixState:ConfigureDiagnosis];
             else if (pane->_followUp==DiagnosisRetry) [pane setFixState:RetryDiagnosis];
             else if (pane->_suggestion.length) [pane setFixState:CopySuggestion];
-            else [pane clearFailure];
+            else [pane finishExplanation];
         }];
     if (!sent) [self setFixState:ShowExplanationAgain];
 }
 - (void)explainFailure:(id)sender {
-    if (!_failure || _assistant || _ended || !_diagnostics) return;
+    if (!_lastCommand || _assistant || _ended || !_diagnostics) return;
     [self.window makeFirstResponder:self];
     switch (_fixState) {
         case AnalyzingError:
             if (_previewPending) { [_session discardPendingLine]; _previewPending=NO; }
-            [_diagnosis cancel]; _diagnosis=nil; [self setFixState:ExplainError]; return;
+            [_diagnosis cancel]; _diagnosis=nil; [self setFixState:ExplainCommand]; return;
         case ConfigureDiagnosis:
             [self setFixState:RetryDiagnosis]; if (_configureAI) _configureAI(); return;
         case CopySuggestion:
             [NSPasteboard.generalPasteboard clearContents];
             [NSPasteboard.generalPasteboard setString:_suggestion forType:NSPasteboardTypeString];
-            [self clearFailure]; return;
+            [self finishExplanation]; return;
         case ShowExplanationAgain: [self deliverExplanation]; return;
         case SendingExplanation: return;
         default: break;
@@ -1041,7 +1052,7 @@ struct PaintedLine {
         pane->_suggestion=command; pane->_followUp=followUp; pane->_diagnosis=nil;
         [pane deliverExplanation];
     };
-    [_diagnosis explain:_failure];
+    [_diagnosis explain:_lastCommand];
 }
 - (NSString *)workingDirectory { return _session.workingDirectory; }
 - (void)showLocalAgent:(NSString *)tool {
@@ -1058,12 +1069,12 @@ struct PaintedLine {
     if (_didRename) _didRename(self);
 }
 - (void)finish:(NSString *)message {
-    _ended = YES; [self clearFailure]; [self closeAssistant]; _sessionTitle = message;
+    _ended = YES; [self clearLastCommand]; [self closeAssistant]; _sessionTitle = message;
     NSString *line = [NSString stringWithFormat:@"\r\n\033[0m[%@]\r\n",message];
     [self consume:std::string_view(line.UTF8String)];
     if (_didRename) _didRename(self);
 }
-- (void)stop { [self clearFailure]; [_assistant cancel]; [_session close]; }
+- (void)stop { [self clearLastCommand]; [_assistant cancel]; [_session close]; }
 - (void)setFrameSize:(NSSize)size { [super setFrameSize:size]; if (_screen && _cw) [self sizeTerminal]; }
 - (void)sizeTerminal {
     int w = std::clamp((int)((self.bounds.size.width-2*insetX)/_cw),2,1000);

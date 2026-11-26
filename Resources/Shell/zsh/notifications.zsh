@@ -75,6 +75,15 @@ _yaaterm_code_context() {
         _yaaterm_context "$_yaaterm_listing"
     fi
 }
+# zsh calls this even when parsing fails and preexec never runs. Keep only a
+# bounded prefix until precmd; returning zero preserves the user's history policy.
+_yaaterm_history_line() {
+    emulate -L zsh
+    if [[ -d $_yaaterm_ai_dir ]]; then
+        _yaaterm_typed_line=${1[1,385]}
+    fi
+    return 0
+}
 _yaaterm_command_start() {
     emulate -L zsh
     setopt extendedglob
@@ -221,8 +230,17 @@ _yaaterm_command_start() {
 _yaaterm_command_end() {
     local code=$?
     emulate -L zsh
+    if (( code )) && [[ -z $_yaaterm_ai_line && -z $_yaaterm_next_id && -d $_yaaterm_ai_dir ]]; then
+        local typed=${_yaaterm_typed_line%$'\n'}
+        if [[ $typed == *[^[:space:]]* ]]; then
+            _yaaterm_ai_line=${typed[1,384]//[[:cntrl:]]/␣}
+            (( ${#typed} > 384 )) && _yaaterm_ai_line+=…
+            (( ++_yaaterm_command_serial ))
+            builtin printf '\033]777;yaaterm-begin;%s;!%d\007' "$_yaaterm_exit_token" "$_yaaterm_command_serial" > "$TTY"
+        fi
+    fi
     [[ -d $_yaaterm_ai_dir ]] && builtin printf '\033]777;yaaterm-end;%s;%d;%s\007' "$_yaaterm_exit_token" "$code" "$_yaaterm_ai_line" > "$TTY"
-    _yaaterm_ai_line='' _yaaterm_next_id=''
+    _yaaterm_ai_line='' _yaaterm_typed_line='' _yaaterm_next_id=''
     _yaaterm_prompt_context
     local name=$_yaaterm_job
     _yaaterm_job=''
@@ -238,7 +256,8 @@ _yaaterm_command_end() {
     return 0
 }
 builtin source "${${(%):-%x}:A:h}/agents.zsh"
-typeset -ga preexec_functions precmd_functions
+typeset -ga preexec_functions precmd_functions zshaddhistory_functions
+zshaddhistory_functions+=(_yaaterm_history_line)
 preexec_functions+=(_yaaterm_command_start)
 precmd_functions=(_yaaterm_command_end "${precmd_functions[@]}")
 

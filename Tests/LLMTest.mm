@@ -372,7 +372,7 @@ static void checkAssistant() {
     waitFor(^BOOL{ return completed; }); assert(!panel.expectedCommand);
     scriptedReply=^NSDictionary *(NSDictionary *body) {
         NSDictionary *task=[NSJSONSerialization JSONObjectWithData:[[body[@"messages"] lastObject][@"content"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
-        assert([task[@"failure"][@"status"] isEqual:@127] && [task[@"mode"] isEqual:@"diagnose"]);
+        assert([task[@"result"][@"status"] isEqual:@127] && [task[@"mode"] isEqual:@"explain"]);
         return @{@"choices":@[@{@"message":@{@"content":@"{\"text\":\"拼写有误\",\"command\":\"ls\\nwhoami\"}"}}]};
     };
     TerminalAssistant *diagnosis=[[TerminalAssistant alloc] initWithDirectory:dir shell:@"zsh"];

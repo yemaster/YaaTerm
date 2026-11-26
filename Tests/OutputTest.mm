@@ -45,8 +45,8 @@ static BOOL missingProfile;
 }
 - (NSURLSessionDataTask *)ask:(NSString *)input instruction:(NSString *)instruction progress:(void (^)(NSString *))progress completion:(void (^)(NSString *,NSString *))reply {
     NSDictionary *task=[NSJSONSerialization JSONObjectWithData:[input dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
-    if ([task[@"mode"] isEqual:@"diagnose"]) {
-        assert(task[@"failure"][@"command"] && task[@"failure"][@"output"] && task[@"failure"][@"status"]);
+    if ([task[@"mode"] isEqual:@"explain"]) {
+        assert(task[@"result"][@"command"] && task[@"result"][@"output"] && task[@"result"][@"status"]);
         assert(progress && ![instruction containsString:@"agent mode"]);
         diagnosisProgress=[progress copy]; diagnosisReply=[reply copy]; return nil;
     }
@@ -430,11 +430,11 @@ static void testTerminalOutput(NSString *directory) {
     assert(![pane valueForKey:@"assistant"]);
     send(@"cd /yaaterm-no-such-directory\r");
     until(^BOOL{ return pane.hasFailedCommand; });
-    NSDictionary *failure=[pane valueForKey:@"failure"];
+    NSDictionary *failure=[pane valueForKey:@"lastCommand"];
     assert([failure[@"command"] isEqual:@"cd /yaaterm-no-such-directory"] && [failure[@"status"] intValue]!=0);
     assert([failure[@"output"] containsString:@"yaaterm-no-such-directory"] && ![failure[@"output"] containsString:@"example.org"]);
     send(@"yaaterm_no_such_executable\r");
-    until(^BOOL{ return [[[pane valueForKey:@"failure"] objectForKey:@"status"] intValue]==127; });
+    until(^BOOL{ return [[[pane valueForKey:@"lastCommand"] objectForKey:@"status"] intValue]==127; });
     Method load=class_getClassMethod(LLMConfiguration.class,@selector(loadSaved:));
     IMP original=method_setImplementation(load,method_getImplementation(class_getClassMethod(PromptFixture.class,@selector(loadFixture:))));
     NSString *proof=[directory stringByAppendingPathComponent:@"confirmed.txt"];
@@ -506,10 +506,28 @@ static void testTerminalOutput(NSString *directory) {
     send(@"false\r"); until(^BOOL{ return pane.hasFailedCommand; }); explain(); send(@"true\r");
     until(^BOOL{ return !pane.hasFailedCommand; }); respond(@"STALE-DIAGNOSIS",nil);
     assert(![pane valueForKey:@"diagnosis"] && !textOnGrid(@"STALE-DIAGNOSIS") && !fixButton());
+    // A successful command is available through the menu, with its real output and no chip.
+    send(@"print -r -- {one,two}-file\r");
+    until(^BOOL{ return [[pane valueForKey:@"lastCommand"][@"command"] isEqual:@"print -r -- {one,two}-file"]; });
+    assert([pane.explanationActionTitle isEqual:@"命令解释"] && !pane.hasFailedCommand && !fixButton());
+    assert([[[pane valueForKey:@"lastCommand"] objectForKey:@"output"] containsString:@"one-file two-file"]);
+    explain(); assert([pane.explanationActionTitle isEqual:@"取消分析"] && !fixButton());
+    respond(@"SUCCESS-EXPLANATION",@"echo UNWANTED-SUGGESTION");
+    until(^BOOL{ return textOnGrid(@"SUCCESS-EXPLANATION") && [pane.explanationActionTitle isEqual:@"命令解释"]; });
+    assert(!textOnGrid(@"UNWANTED-SUGGESTION") && !fixButton());
+    send(@"true\r");
+    until(^BOOL{ return [[pane valueForKey:@"lastCommand"][@"command"] isEqual:@"true"]; });
+    assert([pane.explanationActionTitle isEqual:@"命令解释"] && !fixButton());
+    send(@"print )\r");
+    until(^BOOL{ return pane.hasFailedCommand && [[pane valueForKey:@"lastCommand"][@"command"] isEqual:@"print )"]; });
+    assert([[pane valueForKey:@"lastCommand"][@"output"] containsString:@"parse error"] && fixButton());
+    explain(); respond(@"PARSE-EXPLANATION",nil);
+    until(^BOOL{ return textOnGrid(@"PARSE-EXPLANATION") && [pane.explanationActionTitle isEqual:@"命令解释"]; });
+    assert(!fixButton());
     // Missing configuration and provider errors use the same prompt and action, including in a split.
     NSSize fullSize=pane.frame.size;
     [pane setFrameSize:NSMakeSize(362,230)]; send(@"PROMPT=$'worktree\\n❯ '; RPROMPT='main'; clear\rgti status\r");
-    until(^BOOL{ return [[[pane valueForKey:@"failure"] objectForKey:@"command"] isEqual:@"gti status"]; });
+    until(^BOOL{ return [[[pane valueForKey:@"lastCommand"] objectForKey:@"command"] isEqual:@"gti status"]; });
     checkErrorPosition(@"zsh: command not found: gti",nil);
     [pane setFrameSize:NSMakeSize(274,230)];
     checkErrorPosition(@"zsh: command not found: gti",@"button-narrow.png");
@@ -533,7 +551,7 @@ static void testTerminalOutput(NSString *directory) {
     paint(pane,@"diagnosis-narrow.png");
     send(@"\003"); [pane setFrameSize:fullSize];
     send(@"PROMPT='%F{4}~/project%f ❯ '; RPROMPT=''; clear\rgti status --short\r");
-    until(^BOOL{ return [[[pane valueForKey:@"failure"] objectForKey:@"command"] isEqual:@"gti status --short"]; });
+    until(^BOOL{ return [[[pane valueForKey:@"lastCommand"] objectForKey:@"command"] isEqual:@"gti status --short"]; });
     checkErrorPosition(@"zsh: command not found: gti",@"button-at-error.png");
     NSTimeInterval start=NSProcessInfo.processInfo.systemUptime;
     explain();

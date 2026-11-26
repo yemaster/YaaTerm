@@ -19,7 +19,7 @@ BUFFER=$draft CURSOR=$caret MARK=$mark REGION_ACTIVE=$selection PREDISPLAY=$befo
 if (( LINES >= 3 )) && [[ ! -o singlelinezle && $TERM != dumb ]]; then
     builtin printf '\033[1A\r' > "$TTY"
 fi
-[[ -z $reason ]] || builtin printf '\033[1;34m错误解释\033[0m  %s\n\n' "$reason" > "$TTY"
+[[ -z $reason ]] || builtin printf '\033[1;34m命令解释\033[0m  %s\n\n' "$reason" > "$TTY"
 if [[ -n $line ]]; then
     if [[ -z $BUFFER ]]; then
         BUFFER=$line CURSOR=${#line}

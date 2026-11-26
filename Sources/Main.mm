@@ -158,8 +158,8 @@ static void positionAtDrop(TabWorkspace *workspace, NSRect preview) {
 - (void)explainFailure:(id)sender { [self.current.focused explainFailure:sender]; }
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
     if (item.action==@selector(explainFailure:)) {
-        NSString *action=self.current.focused.failureActionTitle;
-        NSString *title=action ?: @"解释上一条错误";
+        NSString *action=self.current.focused.explanationActionTitle;
+        NSString *title=action ?: @"命令解释";
         if (![item.title isEqual:title]) item.title=title;
         return action!=nil;
     }

@@ -20,7 +20,7 @@ const ShortcutInfo &Shortcut(ShortcutID index) {
         {@"findNext:",@"查找下一处",@"编辑与搜索",cmd|'g'}, {@"findPrevious:",@"查找上一处",@"编辑与搜索",cmd|shift|'g'},
         {@"searchNext",@"下一处（搜索框）",@"编辑与搜索",'\r'}, {@"searchPrevious",@"上一处（搜索框）",@"编辑与搜索",shift|'\r'},
         {@"searchClose",@"关闭搜索框",@"编辑与搜索",0x1b},
-        {@"toggleAssistant:",@"切换 Agent 输入",@"Agent",cmd|'j'}, {@"explainFailure:",@"解释上一条错误",@"Agent",cmd|shift|'e'},
+        {@"toggleAssistant:",@"切换 Agent 输入",@"Agent",cmd|'j'}, {@"explainFailure:",@"命令解释",@"Agent",cmd|shift|'e'},
         {@"agentApprove",@"确认执行命令",@"Agent",'\r'}, {@"agentStop",@"停止当前任务",@"Agent",ctrl|'c'},
         {@"larger:",@"放大字号",@"显示与应用",cmd|'='}, {@"smaller:",@"缩小字号",@"显示与应用",cmd|'-'},
         {@"normalSize:",@"恢复默认字号",@"显示与应用",cmd|'0'}, {@"showSettings:",@"设置…",@"显示与应用",cmd|','},

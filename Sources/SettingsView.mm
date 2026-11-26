@@ -93,7 +93,7 @@ static const SettingInfo &setting(SettingID index) {
         {AboutSection,@"Repository",@"GitHub 仓库",@"项目",nil},
         {AboutSection,@"Feedback",@"意见反馈",@"项目",nil},
         {AboutSection,@"ReleaseNotes",@"更新日志",@"版本记录",nil},
-        {APISection,AIErrorExplanations,@"命令错误解释",@"终端功能",nil},
+        {APISection,AIErrorExplanations,@"命令解释",@"终端功能",nil},
         {APISection,BuiltInAgent,@"内置 Agent",@"终端功能",nil},
         {APISection,LocalAgentLauncher,@"本机 Agent",@"终端功能",nil},
         {APISection,AgentPromptColor,@"Agent 提示符颜色",@"Agent 显示",nil},

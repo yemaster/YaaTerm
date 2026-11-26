@@ -19,7 +19,7 @@ typedef NS_ENUM(NSUInteger, DiagnosisFollowUp) { DiagnosisDone, DiagnosisRetry, 
 @property (copy) void (^onDiagnosis)(NSString *text, NSString *command, DiagnosisFollowUp followUp);
 - (instancetype)initWithDirectory:(NSString *)directory shell:(NSString *)shell;
 - (void)submitTask:(NSString *)input;
-- (void)explain:(NSDictionary *)failure;
+- (void)explain:(NSDictionary *)result;
 - (void)receivedResult:(NSDictionary *)result;
 - (void)cancel;
 @end
