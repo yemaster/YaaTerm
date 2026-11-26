@@ -968,14 +968,28 @@ static void checkNoticeEvents() {
     [TaskNotice.recent.firstObject open];
     assert(work.focused==pane);
     SetTerminalPreference(CommandNoticesKey,AllCommands);
-    for (int i=0; i<40; ++i) [TaskNotice postFrom:pane window:nil title:@"任务" summary:[@(i) stringValue] failed:NO];
-    assert(TaskNotice.recent.count==32 && [TaskNotice.recent.lastObject.summary isEqual:@"8"]);
+    [TaskNotice discardFor:pane];
     NoticeListController *list=[NoticeListController new];
+    NSString *longSummary=[@"已完成构建并验证测试结果。" stringByPaddingToLength:140 withString:@"查看会话详情。" startingAtIndex:0];
+    [TaskNotice postFrom:pane window:nil title:@"任务完成" summary:longSummary failed:NO];
     [list refresh];
     NSTableView *table=[list valueForKey:@"table"];
     NSScrollView *scroll=table.enclosingScrollView;
-    [scroll layoutSubtreeIfNeeded];
-    assert(table.numberOfRows==32 && NSHeight(scroll.frame)==table.rowHeight*6);
+    auto checkVisibleRows=[&](NSInteger count) {
+        [list.view layoutSubtreeIfNeeded];
+        NSRect viewport=scroll.documentVisibleRect;
+        assert(NSMinY(viewport)<=NSMinY([table rectOfRow:0]));
+        assert(NSMaxY(viewport)>=NSMaxY([table rectOfRow:count-1]));
+        if (table.numberOfRows>count) assert(NSMaxY(viewport)<=NSMinY([table rectOfRow:count]));
+        assert(NSContainsRect(list.view.bounds,scroll.frame));
+    };
+    checkVisibleRows(1);
+    for (int i=1; i<40; ++i) {
+        [TaskNotice postFrom:pane window:nil title:@"任务" summary:[@(i) stringValue] failed:NO];
+        if (i==5 || i==6) { [list refresh]; checkVisibleRows(6); }
+    }
+    assert(TaskNotice.recent.count==32 && [TaskNotice.recent.lastObject.summary isEqual:@"8"]);
+    [list refresh]; checkVisibleRows(6);
     TaskNotice *selected=TaskNotice.recent[12];
     [table selectRowIndexes:[NSIndexSet indexSetWithIndex:12] byExtendingSelection:NO];
     [scroll.contentView scrollToPoint:NSMakePoint(0,table.rowHeight*10+5)];

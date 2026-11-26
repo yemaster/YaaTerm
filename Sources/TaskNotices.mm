@@ -258,12 +258,15 @@ static NSTextField *noticeLabel(CGFloat size, NSFontWeight weight, NSColor *colo
     CGFloat inset=anchor ? offset.y-NSMinY([_table rectOfRow:first]) : 0;
     TaskNotice *selection=selected>=0 && selected<(NSInteger)_items.count ? _items[selected] : nil;
     _items=TaskNotice.recent;
-    CGFloat height=MIN(_items.count,(NSUInteger)6)*rowHeight;
+    [_table reloadData];
+    NSInteger visibleRows=MIN(_table.numberOfRows,6);
+    // Inset tables can place the first row below the document origin.
+    CGFloat height=visibleRows ? NSMaxY([_table rectOfRow:visibleRows-1]) : 0;
     _scroll.hidden=!_items.count; _empty.hidden=_items.count!=0;
     [_scroll setFrameSize:NSMakeSize(noticeWidth-8,height)];
     root.frame=NSMakeRect(0,0,noticeWidth,height ? 52+height : 94);
     self.preferredContentSize=root.frame.size;
-    [_table reloadData]; [_table sizeLastColumnToFit];
+    [_table sizeLastColumnToFit];
     NSUInteger index=selection ? [_items indexOfObjectIdenticalTo:selection] : NSNotFound;
     if (index==NSNotFound) [_table deselectAll:nil];
     else [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:index] byExtendingSelection:NO];
