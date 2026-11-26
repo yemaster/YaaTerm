@@ -80,6 +80,20 @@ static NSString *cellText(const Row &row, int start, int end, bool trim) {
 }
 @end
 
+// Keep the backing surface within the pane even for thousands of short lines.
+@interface ExplanationLabel : NSTextField
+@property CGFloat contentHeight;
+@end
+@implementation ExplanationLabel
+- (void)drawRect:(NSRect)dirty {
+    if (_contentHeight<=NSHeight(self.bounds)) { [super drawRect:dirty]; return; }
+    NSRectClip(self.bounds);
+    NSRect text=NSInsetRect(self.bounds,2,0);
+    text.origin.y+=NSHeight(text)-_contentHeight; text.size.height=_contentHeight;
+    [self.attributedStringValue drawWithRect:text options:NSStringDrawingUsesLineFragmentOrigin context:nil];
+}
+@end
+
 enum FixState { ExplainCommand, AnalyzingError, SendingExplanation, ShowExplanationAgain, ConfigureDiagnosis, RetryDiagnosis, CopySuggestion };
 static NSString *const explanationTitles[]={@"命令解释",@"分析中",@"显示中",@"重新显示",@"配置 AI 服务",@"重试分析",@"复制建议"};
 @interface TerminalView () <NSTextFieldDelegate>
@@ -113,10 +127,14 @@ static NSString *const explanationTitles[]={@"命令解释",@"分析中",@"显�
     Cell _failureGlyph;
     NSDictionary *_lastCommand;
     TerminalAssistant *_diagnosis;
-    NSString *_explanation, *_suggestion, *_shownReason;
-    BOOL _previewPending, _showFailureChip;
+    NSString *_explanation, *_suggestion;
+    ExplanationLabel *_explanationLabel;
+    NSProgressIndicator *_explanationProgress;
+    int64_t _promptStart;
+    int _previewRow;
+    CGFloat _previewGap, _previewShift;
+    BOOL _showFailureChip;
     FixState _fixState;
-    DiagnosisFollowUp _followUp;
     uint64_t _commandSerial;
     int64_t _commandRow;
     int _commandColumn;
@@ -571,7 +589,7 @@ struct PaintedLine {
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
     if (_lastCommand) [self updateFixButton];
-    if (_agentProgress) [self observeAgentProgress];
+    if (_agentProgress || _explanationProgress) [self observeProgress];
     if (self.window && _wakeOnActivity) [self wakeForActivity];
     if (_focusWindow || (_screen && _screen->focusReporting)) [self trackWindowFocus];
     [self setLinkModifierDown:self.window.isKeyWindow && (NSEvent.modifierFlags & NSEventModifierFlagCommand)];
@@ -631,7 +649,7 @@ struct PaintedLine {
         if (![TerminalPreferences() boolForKey:AIErrorExplanations]) [self clearLastCommand];
         [self configureCommandTracking]; return;
     }
-    if ([note.object isEqual:TerminalColorScheme]) { [_findBar applyPalette]; _fixButton.contentTintColor=CurrentInterfacePalette().accent; self.needsDisplay = YES; }
+    if ([note.object isEqual:TerminalColorScheme]) { [_findBar applyPalette]; _fixButton.contentTintColor=CurrentInterfacePalette().accent; [self refreshExplanation]; self.needsDisplay = YES; }
     if ([note.object isEqual:TerminalFontSize]) [self adjustFont:0];
     if ([note.object isEqual:TerminalFontFamily] || [note.object isEqual:TerminalFontWeight]) [self applyFontChange];
     if ([note.object isEqual:ScrollbackLines]) {
@@ -691,8 +709,8 @@ struct PaintedLine {
 }
 - (void)clearLastCommand {
     [_diagnosis cancel]; _diagnosis=nil;
-    if (_previewPending || _fixState==SendingExplanation) [_session discardPendingLine];
-    _previewPending=NO; _lastCommand=nil;
+    if (_fixState==SendingExplanation) [_session discardPendingLine];
+    _lastCommand=nil;
     [self finishExplanation];
 }
 - (BOOL)hasFailedCommand { return _showFailureChip; }
@@ -742,7 +760,10 @@ struct PaintedLine {
     }
     NSDictionary *record=@{@"command":command,@"status":@(status),@"output":output};
     if (awaiting) _agentResult=record; // Deliver after the same zsh prompt is ready for the next step.
-    if (explainable) _lastCommand=record;
+    if (explainable) {
+        _lastCommand=record;
+        _promptStart=_screen->historySize()+_screen->y();
+    }
     if (failed) {
         // A silent failure belongs to the echoed command. The start may have scrolled
         // away with history disabled, or moved when the user resized the pane.
@@ -858,35 +879,41 @@ struct PaintedLine {
     NSPoint origin=NSMakePoint(floor(x),floor([self topOfRow:visibleRow]+(_lh-14)/2));
     if (!NSEqualPoints(_agentProgress.frame.origin,origin)) [_agentProgress setFrameOrigin:origin];
 }
-- (void)updateAgentAnimation:(NSNotification *)note {
-    BOOL visible=(self.window.occlusionState & NSWindowOcclusionStateVisible) != 0;
-    if (visible && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion)
-        [_agentProgress startAnimation:nil];
-    else [_agentProgress stopAnimation:nil];
+- (void)updateProgressAnimation:(NSNotification *)note {
+    NSProgressIndicator *progress=_agentProgress ?: _explanationProgress;
+    if ((self.window.occlusionState & NSWindowOcclusionStateVisible) && !progress.hiddenOrHasHiddenAncestor &&
+        !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) [progress startAnimation:nil];
+    else [progress stopAnimation:nil];
 }
-- (void)observeAgentProgress {
+- (void)observeProgress {
     NSNotificationCenter *center=NSNotificationCenter.defaultCenter;
     [center removeObserver:self name:NSWindowDidChangeOcclusionStateNotification object:nil];
-    if (self.window) [center addObserver:self selector:@selector(updateAgentAnimation:)
-                                   name:NSWindowDidChangeOcclusionStateNotification object:self.window];
-    [self updateAgentAnimation:nil];
+    if (self.window) [center addObserver:self selector:@selector(updateProgressAnimation:)
+                                    name:NSWindowDidChangeOcclusionStateNotification object:self.window];
+    [self updateProgressAnimation:nil];
+}
+- (NSProgressIndicator *)newProgressWithLabel:(NSString *)label {
+    NSProgressIndicator *progress=[[NSProgressIndicator alloc] initWithFrame:NSMakeRect(0,0,14,14)];
+    progress.style=NSProgressIndicatorStyleSpinning; progress.controlSize=NSControlSizeSmall;
+    progress.indeterminate=YES; progress.displayedWhenStopped=YES;
+    [progress setAccessibilityLabel:label];
+    [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self selector:@selector(updateProgressAnimation:)
+        name:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification object:nil];
+    return progress;
+}
+- (void)removeProgress:(NSProgressIndicator *)progress {
+    if (!progress) return;
+    [NSNotificationCenter.defaultCenter removeObserver:self name:NSWindowDidChangeOcclusionStateNotification object:nil];
+    [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:self name:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification object:nil];
+    [progress stopAnimation:nil]; [progress removeFromSuperview];
 }
 - (void)setAgentBusy:(BOOL)busy {
     if (busy==(_agentProgress!=nil)) return;
     if (busy) {
-        _agentProgress=[[NSProgressIndicator alloc] initWithFrame:NSMakeRect(0,0,14,14)];
-        _agentProgress.style=NSProgressIndicatorStyleSpinning;
-        _agentProgress.controlSize=NSControlSizeSmall;
-        _agentProgress.indeterminate=YES; _agentProgress.displayedWhenStopped=YES;
-        [_agentProgress setAccessibilityLabel:@"Agent 运行中"];
-        [self positionAgentProgress]; [self addSubview:_agentProgress];
-        [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self selector:@selector(updateAgentAnimation:)
-            name:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification object:nil];
-        [self observeAgentProgress];
+        _agentProgress=[self newProgressWithLabel:@"Agent 运行中"];
+        [self positionAgentProgress]; [self addSubview:_agentProgress]; [self observeProgress];
     } else {
-        [NSNotificationCenter.defaultCenter removeObserver:self name:NSWindowDidChangeOcclusionStateNotification object:nil];
-        [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:self name:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification object:nil];
-        [_agentProgress stopAnimation:nil]; [_agentProgress removeFromSuperview]; _agentProgress=nil;
+        [self removeProgress:_agentProgress]; _agentProgress=nil;
     }
 }
 - (BOOL)builtInAgentVisible { return self.assistantVisible && [_panelFeature isEqual:BuiltInAgent]; }
@@ -988,37 +1015,93 @@ struct PaintedLine {
     if (_assistant) { [self closeAssistant]; return; }
     [self openAssistantFor:BuiltInAgent tool:nil];
 }
-- (void)previewExplanation:(NSString *)reason {
-    if (_fixState!=AnalyzingError || _insideCommand || _screen->alternate || !_screen->bracketPaste) return;
-    __weak TerminalView *weak=self;
-    _previewPending=[_session showDiagnosis:reason suggestion:nil sequence:_commandSerial acknowledged:^(BOOL shown) {
-        TerminalView *pane=weak; if (!pane) return;
-        pane->_previewPending=NO;
-        if (shown) pane->_shownReason=reason;
-        if (pane->_explanation) [pane deliverExplanation];
-    }];
+// Insert a temporary block before the editable prompt in view coordinates. Only the
+// accepted final result enters ZLE and scrollback; streaming never resizes the PTY.
+- (void)positionExplanation {
+    BOOL hidden=_offset || _screen->alternate;
+    if (_explanationLabel.hidden!=hidden) {
+        _explanationLabel.hidden=hidden;
+        if (_explanationProgress) [self updateProgressAnimation:nil];
+    }
+    if (hidden) { _previewGap=_previewShift=0; return; }
+    int64_t start=_promptStart-_screen->historySize();
+    if (_showFailureChip && _screen->failureCell.row>=0)
+        start=_screen->failureCell.row+1-_screen->historySize();
+    _previewRow=(int)std::clamp<int64_t>(start,0,_screen->y());
+    NSSize size=_explanationLabel.frame.size;
+    _previewGap=ceil(size.height/_lh)*_lh+_lh;
+    _previewShift=MAX(0,(_screen->y()+1-_screen->height)*_lh+_previewGap);
+    NSPoint origin=NSMakePoint(insetX-2,[self gridTopOfRow:_previewRow]-_previewShift);
+    if (!NSEqualPoints(origin,_explanationLabel.frame.origin)) [_explanationLabel setFrameOrigin:origin];
+}
+- (void)refreshExplanation {
+    if (!_explanationLabel) return;
+    CGFloat oldGap=_previewGap, oldShift=_previewShift;
+    NSString *title=@"命令解释";
+    NSString *line=[NSString stringWithFormat:@"%@  %@",title,_explanation ?: @""];
+    NSMutableParagraphStyle *style=[[NSMutableParagraphStyle alloc] init];
+    style.minimumLineHeight=style.maximumLineHeight=_lh; style.lineBreakMode=NSLineBreakByCharWrapping;
+    NSMutableAttributedString *rich=[[NSMutableAttributedString alloc] initWithString:line attributes:@{
+        NSFontAttributeName:_regular, NSForegroundColorAttributeName:foreground(), NSParagraphStyleAttributeName:style}];
+    NSRange header=NSMakeRange(0,title.length);
+    NSDictionary *face=[self attributesForFace:1 underlined:NO];
+    [rich addAttributes:face range:header];
+    // Each CJK title glyph occupies two cells in the committed shell transcript.
+    CGFloat tracking=2*_cw-[title sizeWithAttributes:face].width/title.length;
+    [rich addAttribute:NSKernAttributeName value:@(tracking) range:header];
+    [rich addAttribute:NSForegroundColorAttributeName value:TerminalIndexedColor(PreferredColorScheme(),4) range:header];
+    _explanationLabel.attributedStringValue=rich;
+    CGFloat width=MAX(1,NSWidth(self.bounds)-2*insetX+4);
+    CGFloat height=[_explanationLabel.cell cellSizeForBounds:NSMakeRect(0,0,width,CGFLOAT_MAX)].height;
+    CGFloat visible=MAX(1,_screen->height-3)*_lh;
+    _explanationLabel.contentHeight=height;
+    [_explanationLabel setFrameSize:NSMakeSize(width,std::clamp(height,_lh,visible))];
+    if (_explanationProgress) {
+        CGFloat x=MIN(width-14,ceil(rich.size.width)+2);
+        [_explanationProgress setFrameOrigin:NSMakePoint(MAX(0,x),MAX(0,(_lh-14)/2))];
+    }
+    [self positionExplanation];
+    if (oldGap!=_previewGap || oldShift!=_previewShift) self.needsDisplay=YES;
+}
+- (void)showExplanationPreview:(NSString *)text {
+    if (!_explanationLabel) {
+        _explanationLabel=[ExplanationLabel wrappingLabelWithString:@""];
+        _explanationLabel.lineBreakMode=NSLineBreakByCharWrapping;
+        [self addSubview:_explanationLabel positioned:NSWindowBelow relativeTo:nil];
+    }
+    NSString *body=text ? TerminalTranscriptText(text) : nil;
+    if (body && [_explanation isEqual:body]) return;
+    _explanation=body;
+    if (!text && !_explanationProgress) {
+        _explanationProgress=[self newProgressWithLabel:@"正在获取命令解释"];
+        [_explanationLabel addSubview:_explanationProgress]; [self observeProgress];
+    } else if (text && _explanationProgress) {
+        [self removeProgress:_explanationProgress]; _explanationProgress=nil;
+    }
+    if (self.window) [self refreshExplanation];
+}
+- (void)removeExplanationPreview {
+    if (!_explanationLabel) return;
+    [self removeProgress:_explanationProgress]; _explanationProgress=nil;
+    [_explanationLabel removeFromSuperview]; _explanationLabel=nil;
+    _previewGap=_previewShift=0; self.needsDisplay=YES;
 }
 - (void)finishExplanation {
-    // Dismiss the inline action; the last command remains available from the menu.
+    [self removeExplanationPreview];
     _showFailureChip=NO; _screen->failureCell={-1,0};
-    _fixState=ExplainCommand; _explanation=nil; _suggestion=nil; _shownReason=nil;
+    _fixState=ExplainCommand; _explanation=nil; _suggestion=nil;
     [_fixButton removeFromSuperview]; _fixButton=nil;
 }
 - (void)deliverExplanation {
     __weak TerminalView *weak=self;
     [self setFixState:SendingExplanation];
-    if (_previewPending) return;
-    NSString *remaining=[_explanation isEqual:_shownReason] && _followUp==DiagnosisDone ? nil : _explanation;
-    if (!remaining && !_suggestion.length) { [self finishExplanation]; return; }
     BOOL sent=!_insideCommand && !_screen->alternate && _screen->bracketPaste &&
-        [_session showDiagnosis:remaining suggestion:_suggestion sequence:_commandSerial acknowledged:^(BOOL shown) {
+        [_session showDiagnosis:_explanation suggestion:_suggestion sequence:_commandSerial acknowledged:^(BOOL shown) {
             TerminalView *pane=weak;
             if (!pane || pane->_fixState!=SendingExplanation) return;
             if (!shown) { [pane setFixState:ShowExplanationAgain]; return; }
-            pane->_explanation=nil;
-            if (pane->_followUp==DiagnosisConfigure) [pane setFixState:ConfigureDiagnosis];
-            else if (pane->_followUp==DiagnosisRetry) [pane setFixState:RetryDiagnosis];
-            else if (pane->_suggestion.length) [pane setFixState:CopySuggestion];
+            [pane removeExplanationPreview]; pane->_explanation=nil;
+            if (pane->_suggestion.length) [pane setFixState:CopySuggestion];
             else [pane finishExplanation];
         }];
     if (!sent) [self setFixState:ShowExplanationAgain];
@@ -1028,7 +1111,7 @@ struct PaintedLine {
     [self.window makeFirstResponder:self];
     switch (_fixState) {
         case AnalyzingError:
-            if (_previewPending) { [_session discardPendingLine]; _previewPending=NO; }
+            [self removeExplanationPreview]; _explanation=nil;
             [_diagnosis cancel]; _diagnosis=nil; [self setFixState:ExplainCommand]; return;
         case ConfigureDiagnosis:
             [self setFixState:RetryDiagnosis]; if (_configureAI) _configureAI(); return;
@@ -1041,16 +1124,18 @@ struct PaintedLine {
         default: break;
     }
     [self setFixState:AnalyzingError];
-    _shownReason=nil;
+    if (_offset) { _offset=0; _topColumn=0; _visibleRows.clear(); [self updateFrameSpacing]; }
+    [self showExplanationPreview:nil];
     _diagnosis=[[TerminalAssistant alloc] initWithDirectory:_session.workingDirectory shell:_session.shellName];
     __weak TerminalView *weak=self;
-    _diagnosis.onPreview=^(NSString *reason) { [weak previewExplanation:reason]; };
+    _diagnosis.onPreview=^(NSString *reason) { [weak showExplanationPreview:reason]; };
     _diagnosis.onDiagnosis=^(NSString *text, NSString *command, DiagnosisFollowUp followUp) {
         TerminalView *pane=weak; if (!pane) return;
         NSString *reason=[text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        pane->_explanation=reason.length ? reason : @"可尝试下面的命令。";
-        pane->_suggestion=command; pane->_followUp=followUp; pane->_diagnosis=nil;
-        [pane deliverExplanation];
+        [pane showExplanationPreview:reason.length ? reason : @"可尝试下面的命令。"];
+        pane->_suggestion=command; pane->_diagnosis=nil;
+        if (followUp==DiagnosisDone) [pane deliverExplanation];
+        else [pane setFixState:followUp==DiagnosisConfigure ? ConfigureDiagnosis : RetryDiagnosis];
     };
     [_diagnosis explain:_lastCommand];
 }
@@ -1079,10 +1164,15 @@ struct PaintedLine {
 - (void)sizeTerminal {
     int w = std::clamp((int)((self.bounds.size.width-2*insetX)/_cw),2,1000);
     int h = std::clamp((int)((self.bounds.size.height-2*insetY)/_lh),1,500);
-    if (w == _screen->cols && h == _screen->height) { if (_findBar && !_wakeOnActivity) [self positionFindBar]; return; }
+    if (w == _screen->cols && h == _screen->height) {
+        if (_findBar && !_wakeOnActivity) [self positionFindBar];
+        if (_explanationLabel) [self refreshExplanation];
+        return;
+    }
     if (_wakeOnActivity) [self wakeForActivity];
     [self clearListingButtons];
     _screen->resize(w,h); [_session resizeCols:w rows:h];
+    if (_explanationLabel) [self refreshExplanation];
     _offset = 0; _topColumn = 0; _visibleRows.clear(); [self updateFrameSpacing];
     _anchor = _extent = -1; self.needsDisplay = YES;
     if (_findBar) { [self restartFind]; [self positionFindBar]; }
@@ -1119,6 +1209,7 @@ struct PaintedLine {
         if (_screen->hasAgentBlocks() && (_screen->agentOutputStamp() || !_frameEdges.empty() || full || before!=_screen->linesScrolled))
             full |= [self updateFrameSpacing];
     }
+    if (_explanationLabel) { [self positionExplanation]; full=YES; }
     if (reset && _findBar) [self restartFind];
     else if (_findHit && _findHit->last.row >= _screen->historySize()+_screen->dirtyFirst &&
              _findHit->first.row <= _screen->historySize()+_screen->dirtyLast) [self restartFind];
@@ -1223,12 +1314,19 @@ struct PaintedLine {
 }
 - (CGFloat)topOfRow:(int)row {
     CGFloat top=insetY+row*_lh;
+    if (_previewGap) top+=(row>=_previewRow ? _previewGap : 0)-_previewShift;
     if (!_verticalGap) return top;
     auto before=std::upper_bound(_frameEdges.begin(),_frameEdges.end(),row)-_frameEdges.begin();
     return top+before*_verticalGap-floor(_frameEdges.size()*_verticalGap/2);
 }
+- (CGFloat)gridTopOfRow:(int)row {
+    return [self topOfRow:row]-(row>=_previewRow ? _previewGap : 0)+_previewShift;
+}
 - (int)rowAtY:(CGFloat)y {
-    int row=std::clamp((int)floor((y-insetY)/_lh),0,_screen->height-1);
+    CGFloat gridY=y+_previewShift;
+    if (_previewGap && gridY>=[self gridTopOfRow:_previewRow])
+        gridY=MAX([self gridTopOfRow:_previewRow],gridY-_previewGap);
+    int row=std::clamp((int)floor((gridY-insetY)/_lh),0,_screen->height-1);
     if (_verticalGap) {
         while (row>0 && y<[self topOfRow:row]) --row;
         while (row+1<_screen->height && y>=[self topOfRow:row+1]) ++row;
@@ -1260,6 +1358,7 @@ struct PaintedLine {
 }
 - (void)drawRect:(NSRect)dirty {
     if (_wakeOnActivity) [self wakeForActivity];
+    if (_explanationLabel) [self positionExplanation];
     CGContextRef ctx = NSGraphicsContext.currentContext.CGContext;
     if (!_usesBackdrop) { [TerminalBackground() setFill]; NSRectFill(dirty); }
     int first = MAX(0,[self rowAtY:NSMinY(dirty)]-(_verticalGap>0));

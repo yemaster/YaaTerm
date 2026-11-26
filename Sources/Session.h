@@ -1,5 +1,7 @@
 #import <Foundation/Foundation.h>
 
+FOUNDATION_EXPORT NSString *TerminalTranscriptText(NSString *text);
+
 @interface Session : NSObject
 @property (copy) void (^onData)(const void *, size_t);
 @property (copy) void (^onExit)(void);

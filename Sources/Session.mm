@@ -229,7 +229,7 @@
     if (![identifier writeToFile:path atomically:YES encoding:NSASCIIStringEncoding error:nil]) return NO;
     [self wakeEditor]; return YES;
 }
-static NSString *transcriptText(NSString *text) {
+NSString *TerminalTranscriptText(NSString *text) {
     static NSRegularExpression *controls=[NSRegularExpression regularExpressionWithPattern:@"[\\p{Cc}&&[^\\n\\t]]|\\p{Bidi_Control}" options:0 error:nil];
     return [controls stringByReplacingMatchesInString:text options:0 range:NSMakeRange(0,text.length) withTemplate:@"�"];
 }
@@ -243,12 +243,12 @@ static NSString *transcriptText(NSString *text) {
 - (void)previewAgentText:(NSString *)text {
     if (!_agentInputID || ![self shellIsForeground]) return;
     NSString *path=[_controlDirectory stringByAppendingPathComponent:@"preview"];
-    if ([transcriptText(text) writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil]) [self wakeEditor];
+    if ([TerminalTranscriptText(text) writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil]) [self wakeEditor];
 }
 - (void)postAgentText:(NSString *)text finished:(BOOL)finished wakeEditor:(BOOL)wake {
     if (!_agentInputID) return;
     unlink([_controlDirectory stringByAppendingPathComponent:@"preview"].fileSystemRepresentation);
-    text=transcriptText(text);
+    text=TerminalTranscriptText(text);
     NSString *name=[NSString stringWithFormat:@"note-%@-%010lu",_agentInputID,(unsigned long)++_noteNumber];
     if (text.length) [text writeToFile:[_controlDirectory stringByAppendingPathComponent:name] atomically:YES encoding:NSUTF8StringEncoding error:nil];
     if (finished) [@"" writeToFile:[_controlDirectory stringByAppendingPathComponent:[@"done-" stringByAppendingString:_agentInputID]]
@@ -291,9 +291,9 @@ static NSString *transcriptText(NSString *text) {
 }
 - (BOOL)showDiagnosis:(NSString *)text suggestion:(NSString *)command sequence:(uint64_t)sequence acknowledged:(void (^)(BOOL))reply {
     if (!sequence || _agentInputID) return NO;
-    NSString *body=transcriptText(text ?: @"");
+    NSString *body=TerminalTranscriptText(text ?: @"");
     // The suggested line stays editable. Only plain, single-line commands may enter ZLE's buffer.
-    if (command && (![command isEqual:transcriptText(command)] || command.length>384 ||
+    if (command && (![command isEqual:TerminalTranscriptText(command)] || command.length>384 ||
         [command rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location!=NSNotFound ||
         [command rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location!=NSNotFound)) command=nil;
     NSString *payload=[NSString stringWithFormat:@"%@\n%llu\n%@",command ?: @"",sequence,body];

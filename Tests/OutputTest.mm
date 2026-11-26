@@ -103,7 +103,17 @@ static NSBitmapImageRep *paint(TerminalView *pane, NSString *name) {
     for (NSView *view in pane.subviews) {
         if (view.hidden) continue;
         if ([view isKindOfClass:NSButton.class]) [[(NSButton *)view cell] drawWithFrame:view.frame inView:pane];
-        else if ([view isKindOfClass:NSProgressIndicator.class]) {
+        else if ([view isKindOfClass:NSTextField.class]) {
+            [NSGraphicsContext saveGraphicsState];
+            CGContextTranslateCTM(cg,NSMinX(view.frame),NSMinY(view.frame));
+            [view drawRect:view.bounds]; [NSGraphicsContext restoreGraphicsState];
+            for (NSView *indicator in view.subviews) {
+                [NSGraphicsContext saveGraphicsState];
+                NSRect frame=[indicator convertRect:indicator.bounds toView:pane];
+                CGContextTranslateCTM(cg,NSMinX(frame),NSMinY(frame));
+                [indicator drawRect:indicator.bounds]; [NSGraphicsContext restoreGraphicsState];
+            }
+        } else if ([view isKindOfClass:NSProgressIndicator.class]) {
             [NSGraphicsContext saveGraphicsState];
             CGContextTranslateCTM(cg,NSMinX(view.frame),NSMinY(view.frame));
             [view drawRect:view.bounds];
@@ -458,6 +468,8 @@ static void testTerminalOutput(NSString *directory) {
     };
     auto textOnGrid=[&](NSString *needle){ return rowOnGrid(needle)>=0; };
     auto fixButton=^NSButton *{ return [pane valueForKey:@"fixButton"]; };
+    auto preview=^NSTextField *{ return [pane valueForKey:@"explanationLabel"]; };
+    auto spinner=^NSProgressIndicator *{ return [pane valueForKey:@"explanationProgress"]; };
     auto checkErrorPosition=[&](NSString *needle,NSString *preview) {
         paint(pane,preview);
         NSButton *button=fixButton();
@@ -477,10 +489,11 @@ static void testTerminalOutput(NSString *directory) {
     assert(ioctl(fixFD,TIOCGWINSZ,&beforeFix)==0);
     NSUInteger views=pane.subviews.count;
     explain();
-    assert(!pane.assistantVisible && !session.agentInputID && pane.subviews.count==views && window.firstResponder==pane);
+    assert(!pane.assistantVisible && !session.agentInputID && pane.subviews.count==views+1 && window.firstResponder==pane);
+    assert([preview().stringValue isEqual:@"命令解释  "] && spinner().superview==preview());
     assert([fixButton().title isEqual:@"分析中"]);
     NSString *suggestion=@"print -r verified > \"$ZDOTDIR/confirmed.txt\"";
-    // The final response can arrive before ZLE acknowledges the preview.
+    // A suggestion is delivered only after the complete response.
     diagnosisProgress(@"{\"text\":\"命令不存在，请检查拼写。\",\"command\":\"pri");
     respond(@"命令不存在，请检查拼写。",suggestion);
     until(^BOOL{ return [fixButton().title isEqual:@"复制建议"] && textOnGrid(@"verified >"); });
@@ -496,7 +509,7 @@ static void testTerminalOutput(NSString *directory) {
     checkErrorPosition(@"❯ false",nil); explain();
     send(@"print -r DRAFT-KEPT\001"); // Ctrl+A leaves the insertion point at the start.
     diagnosisProgress(@"{\"text\":\"Literal $(touch INJECTED) \\u001b]2;injected\\u0007\",");
-    until(^BOOL{ return textOnGrid(@"Literal $(touch INJECTED)"); });
+    assert([preview().stringValue isEqual:@"命令解释  Literal $(touch INJECTED) �]2;injected�"] && !spinner());
     respond(@"Literal $(touch INJECTED) \033]2;injected\007",@"touch INJECTED");
     until(^BOOL{ return [fixButton().title isEqual:@"复制建议"] && textOnGrid(@"建议命令  touch INJECTED"); });
     assert(![pane.sessionTitle isEqual:@"injected"] && textOnGrid(@"print -r DRAFT-KEPT"));
@@ -505,19 +518,27 @@ static void testTerminalOutput(NSString *directory) {
     // A new command invalidates the outstanding explanation, even if its request completes afterwards.
     send(@"false\r"); until(^BOOL{ return pane.hasFailedCommand; }); explain(); send(@"true\r");
     until(^BOOL{ return !pane.hasFailedCommand; }); respond(@"STALE-DIAGNOSIS",nil);
-    assert(![pane valueForKey:@"diagnosis"] && !textOnGrid(@"STALE-DIAGNOSIS") && !fixButton());
+    assert(![pane valueForKey:@"diagnosis"] && !textOnGrid(@"STALE-DIAGNOSIS") && !fixButton() && !preview() && !spinner());
     // A successful command is available through the menu, with its real output and no chip.
     send(@"print -r -- {one,two}-file\r");
     until(^BOOL{ return [[pane valueForKey:@"lastCommand"][@"command"] isEqual:@"print -r -- {one,two}-file"]; });
     assert([pane.explanationActionTitle isEqual:@"命令解释"] && !pane.hasFailedCommand && !fixButton());
     assert([[[pane valueForKey:@"lastCommand"] objectForKey:@"output"] containsString:@"one-file two-file"]);
     explain(); assert([pane.explanationActionTitle isEqual:@"取消分析"] && !fixButton());
+    assert(preview() && spinner());
+    diagnosisProgress(@"SUCCESS-");
+    assert([preview().stringValue isEqual:@"命令解释  SUCCESS-"]);
     respond(@"SUCCESS-EXPLANATION",@"echo UNWANTED-SUGGESTION");
     until(^BOOL{ return textOnGrid(@"SUCCESS-EXPLANATION") && [pane.explanationActionTitle isEqual:@"命令解释"]; });
     assert(!textOnGrid(@"UNWANTED-SUGGESTION") && !fixButton());
     send(@"true\r");
     until(^BOOL{ return [[pane valueForKey:@"lastCommand"][@"command"] isEqual:@"true"]; });
     assert([pane.explanationActionTitle isEqual:@"命令解释"] && !fixButton());
+    explain(); assert(spinner());
+    [pane explainFailure:nil];
+    assert(!preview() && !spinner() && [pane.explanationActionTitle isEqual:@"命令解释"]);
+    diagnosisProgress(@"{\"text\":\"CANCELED");
+    respond(@"CANCELED",nil); assert(!preview() && !textOnGrid(@"CANCELED"));
     send(@"print )\r");
     until(^BOOL{ return pane.hasFailedCommand && [[pane valueForKey:@"lastCommand"][@"command"] isEqual:@"print )"]; });
     assert([[pane valueForKey:@"lastCommand"][@"output"] containsString:@"parse error"] && fixButton());
@@ -539,14 +560,34 @@ static void testTerminalOutput(NSString *directory) {
     [pane removeFromSuperview]; assert(!fixButton() && pane.hasFailedCommand);
     [window.contentView addSubview:pane]; assert(fixButton());
     missingProfile=YES; [pane explainFailure:nil];
-    until(^BOOL{ return [fixButton().title isEqual:@"配置 AI 服务"] && textOnGrid(@"请配置 AI 服务。"); });
+    until(^BOOL{ return [fixButton().title isEqual:@"配置 AI 服务"] && [preview().stringValue hasSuffix:@"请配置 AI 服务。"]; });
     __block BOOL configured=NO; pane.configureAI=^{ configured=YES; };
     [pane explainFailure:nil]; assert(configured); missingProfile=NO; pane.configureAI=nil;
-    explain(); diagnosisReply(nil,@"模型服务连接超时。"); diagnosisReply=nil;
-    until(^BOOL{ return [fixButton().title isEqual:@"重试分析"] && textOnGrid(@"模型服务连接超时。"); });
-    explain(); respond(@"命令名写反了，应为 git。\n参数可以保留。",@"git status");
+    NSTextField *sameBlock=preview();
+    explain(); assert(preview()==sameBlock && spinner() && !textOnGrid(@"请配置 AI 服务。"));
+    diagnosisProgress(@"{\"text\":\"第一次回复");
+    assert([preview().stringValue hasSuffix:@"第一次回复"] && !spinner());
+    NSString *manyLines=[[@"第一次回复" stringByPaddingToLength:805 withString:@"\\n请检查" startingAtIndex:0]
+        stringByAppendingString:@"\\nSTREAM-TAIL"];
+    diagnosisProgress([NSString stringWithFormat:@"{\"text\":\"%@",manyLines]);
+    assert(NSHeight(preview().frame)<NSHeight(pane.bounds) && [preview().stringValue containsString:@"\n请检查"]);
+    assert([preview().stringValue hasSuffix:@"STREAM-TAIL"]);
+    assert([[preview() valueForKey:@"contentHeight"] doubleValue]>10*NSHeight(preview().frame));
+    paint(pane,@"diagnosis-long-stream.png");
+    void (^oldProgress)(NSString *)=[diagnosisProgress copy];
+    diagnosisReply(nil,@"模型服务连接超时。"); diagnosisReply=nil;
+    until(^BOOL{ return [fixButton().title isEqual:@"重试分析"] && [preview().stringValue isEqual:@"命令解释  模型服务连接超时。"]; });
+    explain();
+    assert(preview()==sameBlock && [preview().stringValue isEqual:@"命令解释  "] && spinner());
+    oldProgress(@"{\"text\":\"第一次回复迟到");
+    assert([preview().stringValue isEqual:@"命令解释  "] && !textOnGrid(@"模型服务连接超时。"));
+    diagnosisProgress(@"{\"command\":\"git status\"");
+    assert(spinner() && [preview().stringValue isEqual:@"命令解释  "]);
+    diagnosisProgress(@"{\"command\":\"git status\",\"text\":\"命令名写反了");
+    assert(preview()==sameBlock && [preview().stringValue isEqual:@"命令解释  命令名写反了"] && !spinner());
+    respond(@"命令名写反了，应为 git。\n参数可以保留。",@"git status");
     until(^BOOL{ return [fixButton().title isEqual:@"复制建议"] && textOnGrid(@"❯ git status"); });
-    assert(textOnGrid(@"命令名写反了") && !textOnGrid(@"回车执行") && textOnGrid(@"worktree") && textOnGrid(@"main"));
+    assert(!preview() && !textOnGrid(@"连接超时") && !textOnGrid(@"请配置 AI") && textOnGrid(@"命令名写反了") && !textOnGrid(@"回车执行") && textOnGrid(@"worktree") && textOnGrid(@"main"));
     assert(rowOnGrid(@"参数可以保留。")==rowOnGrid(@"命令名写反了")+1 && rowOnGrid(@"❯ git status")==rowOnGrid(@"参数可以保留。")+3);
     paint(pane,@"diagnosis-narrow.png");
     send(@"\003"); [pane setFrameSize:fullSize];
@@ -555,11 +596,13 @@ static void testTerminalOutput(NSString *directory) {
     checkErrorPosition(@"zsh: command not found: gti",@"button-at-error.png");
     NSTimeInterval start=NSProcessInfo.processInfo.systemUptime;
     explain();
+    paint(pane,@"diagnosis-loading.png");
     diagnosisProgress(@"{\"text\":\"找不到 gti");
-    assert(!textOnGrid(@"找不到 gti"));
-    diagnosisProgress(@"{\"text\":\"找不到 gti，你可能想输入 git。\",\"command\":\"git st");
-    until(^BOOL{ return textOnGrid(@"找不到 gti"); });
+    assert([preview().stringValue isEqual:@"命令解释  找不到 gti"] && !spinner());
     NSTimeInterval firstVisible=NSProcessInfo.processInfo.systemUptime-start;
+    paint(pane,@"diagnosis-streaming.png");
+    diagnosisProgress(@"{\"text\":\"找不到 gti，你可能想输入 git。\",\"command\":\"git st");
+    assert([preview().stringValue isEqual:@"命令解释  找不到 gti，你可能想输入 git。"] && !textOnGrid(@"找不到 gti"));
     assert([fixButton().title isEqual:@"分析中"] && !textOnGrid(@"❯ git status --short"));
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,350*NSEC_PER_MSEC),dispatch_get_main_queue(),^{
         respond(@"\n  找不到 gti，你可能想输入 git。  \n",@"git status --short");
@@ -583,8 +626,14 @@ static void testTerminalOutput(NSString *directory) {
     [pane scrollWheel:[NSEvent eventWithCGEvent:scroll]]; CFRelease(scroll);
     checkErrorPosition(@"scroll-anchor-failed",nil);
     explain();
+    diagnosisProgress(@"```json\n{\"text\":\"A\\");
+    assert([preview().stringValue isEqual:@"命令解释  A"]);
+    diagnosisProgress(@"```json\n{\"text\":\"A\\nB\\uD83D");
+    assert([preview().stringValue isEqual:@"命令解释  A\nB"]);
+    diagnosisProgress(@"```json\n{\"text\":\"A\\nB\\uD83D\\uDE80\\\"x\"}");
+    assert([preview().stringValue isEqual:@"命令解释  A\nB🚀\"x"]);
     SetTerminalPreference(AIErrorExplanations,NO); respond(@"DISABLED-DIAGNOSIS",nil);
-    assert(![pane valueForKey:@"diagnosis"] && !fixButton() && !textOnGrid(@"DISABLED-DIAGNOSIS") && !session.tracksCommands);
+    assert(![pane valueForKey:@"diagnosis"] && !fixButton() && !textOnGrid(@"DISABLED-DIAGNOSIS") && !session.tracksCommands && !preview() && !spinner());
     SetTerminalPreference(AIErrorExplanations,YES);
     assert([NSFileManager.defaultManager createDirectoryAtPath:[directory stringByAppendingPathComponent:@"build %n"]
         withIntermediateDirectories:NO attributes:nil error:nil]);

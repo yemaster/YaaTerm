@@ -22,15 +22,56 @@ static NSString *bounded(NSString *text, NSUInteger limit) {
     return [[text substringToIndex:end.location] stringByAppendingString:@"…"];
 }
 
-// Decode just the first complete JSON string. A partial escape or a command never enters ZLE.
-static NSString *streamedReason(NSString *partial) {
-    static NSRegularExpression *firstText=[NSRegularExpression regularExpressionWithPattern:
-        @"\\A\\s*(?:```(?:json)?\\s*)?\\{\\s*\"text\"\\s*:\\s*(\"(?:[^\"\\\\]++|\\\\.)*\")" options:0 error:nil];
-    NSTextCheckingResult *match=[firstText firstMatchInString:partial options:0 range:NSMakeRange(0,partial.length)];
-    if (!match) return nil;
-    NSData *literal=[[partial substringWithRange:[match rangeAtIndex:1]] dataUsingEncoding:NSUTF8StringEncoding];
-    NSString *decoded=[NSJSONSerialization JSONObjectWithData:literal options:NSJSONReadingFragmentsAllowed error:nil];
-    return [bounded(decoded,5000) stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+// The transport supplies cumulative snapshots. Decode only newly arrived, complete JSON
+// escapes, leaving a split escape (including a surrogate pair) for the next snapshot.
+static NSString *streamedReason(NSString *partial, NSUInteger &cursor, NSMutableString *reason, BOOL &finished) {
+    if (finished) return nil;
+    if (!cursor) {
+        static NSRegularExpression *prefix=[NSRegularExpression regularExpressionWithPattern:
+            @"\\A\\s*(?:```(?:json)?\\s*)?\\{\\s*(?:\"command\"\\s*:\\s*\"(?:[^\"\\\\]++|\\\\.)*\"\\s*,\\s*)?\"text\"\\s*:\\s*\""
+            options:NSRegularExpressionCaseInsensitive error:nil];
+        NSRange match=[prefix rangeOfFirstMatchInString:partial options:0 range:NSMakeRange(0,partial.length)];
+        if (match.location==NSNotFound) {
+            NSString *plain=[partial stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            if (!plain.length || [plain hasPrefix:@"{"] || [plain hasPrefix:@"["] || [plain hasPrefix:@"`"]) return nil;
+            return bounded(plain,5000);
+        }
+        cursor=NSMaxRange(match);
+    }
+    NSUInteger end=cursor, units=reason.length;
+    while (end<partial.length && units<5000) {
+        unichar ch=[partial characterAtIndex:end];
+        if (ch=='"') { finished=YES; break; }
+        if (ch=='\\') {
+            if (end+1>=partial.length) break;
+            NSUInteger length=[partial characterAtIndex:end+1]=='u' ? 6 : 2;
+            if (end+length>partial.length) break;
+            if (length==6) {
+                unichar a=[partial characterAtIndex:end+2], b=[partial characterAtIndex:end+3];
+                if ((a=='d' || a=='D') && (b=='8' || b=='9' || b=='a' || b=='A' || b=='b' || b=='B')) {
+                    ++units; length+=6;
+                    if (end+length>partial.length) break;
+                }
+            }
+            end+=length;
+        } else {
+            if (CFStringIsSurrogateHighCharacter(ch)) {
+                if (end+1>=partial.length) break;
+                ++end; ++units;
+            }
+            ++end;
+        }
+        ++units;
+    }
+    if (end==cursor) return nil;
+    NSString *literal=[NSString stringWithFormat:@"\"%@\"",[partial substringWithRange:NSMakeRange(cursor,end-cursor)]];
+    NSString *piece=[NSJSONSerialization JSONObjectWithData:[literal dataUsingEncoding:NSUTF8StringEncoding]
+                                                   options:NSJSONReadingFragmentsAllowed error:nil];
+    if (!piece) { finished=YES; return nil; }
+    cursor=end;
+    [reason appendString:piece];
+    if (reason.length>=5000) finished=YES;
+    return [bounded(reason,5000) stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
 }
 
 // Single-quote one literal argument for the user's zsh, including embedded apostrophes.
@@ -143,12 +184,14 @@ static NSString *shellArgument(NSString *value) {
     __weak TerminalAssistant *weak=self;
     void (^progress)(NSString *)=nil;
     if (_commandResult && allowStream && _onPreview) {
-        __block BOOL published=NO;
+        __block NSUInteger cursor=0;
+        __block BOOL finished=NO;
+        NSMutableString *decoded=[NSMutableString string];
         progress=^(NSString *partial) {
             TerminalAssistant *panel=weak;
-            if (published || !panel || !panel.busy || panel->_ticket!=ticket) return;
-            NSString *reason=streamedReason(partial);
-            if (reason.length) { published=YES; panel.onPreview(reason); }
+            if (finished || !panel || !panel.busy || panel->_ticket!=ticket) return;
+            NSString *reason=streamedReason(partial,cursor,decoded,finished);
+            if (reason.length) panel.onPreview(reason);
         };
     } else if (!_commandResult && [TerminalPreferences() boolForKey:AgentStreamReplies]) progress=^(NSString *partial) {
         TerminalAssistant *panel=weak;
