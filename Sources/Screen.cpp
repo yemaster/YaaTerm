@@ -413,6 +413,16 @@ size_t Screen::mouseReport(char (&out)[48], int button, MouseAction action, int 
     }
     return length;
 }
+void Screen::recordPromptStart() {
+    promptStart=historySize()+y();
+    if (commandOutputEnd.row>=0) rowsToPrompt=promptStart-commandOutputEnd.row;
+}
+
+void Screen::expectPromptRedraw() {
+    recordPromptStart(); // Fallback when the line editor does not redraw.
+    awaitingPromptRedraw=true;
+}
+
 void Screen::mode(int n, bool on, bool priv) {
     auto &b = active();
     if (!priv) { if (n == 4) insert = on; return; }
@@ -431,9 +441,13 @@ void Screen::mode(int n, bool on, bool priv) {
             break;
         case 1004: focusReporting = on; break;
         case 1007: alternateScroll = on; break;
-        case 2004: bracketPaste = on; break;
+        case 2004:
+            bracketPaste = on;
+            if (on) awaitingPromptRedraw=false;
+            break;
         case 47: case 1047: case 1049:
             if (on == alternate) break;
+            awaitingPromptRedraw=false;
             finishCode();
             if (on && n == 1049) {
                 main.saved = main.cursor;
@@ -569,6 +583,12 @@ void Screen::control(char c) {
         case 'd': b.cursor.y = n-1 + (b.cursor.origin ? b.top : 0); break;
         case 'H': case 'f': b.cursor.y = n-1 + (b.cursor.origin ? b.top : 0); b.cursor.x = std::max(1,args[1])-1; break;
         case 'J':
+            // ZLE clears from column zero before painting PS1. Prompt expansion and
+            // precmd hooks can write to the TTY after the authenticated command-end marker.
+            if (awaitingPromptRedraw && !alternate && !priv && a==0 && b.cursor.x==0) {
+                recordPromptStart();
+                if (bracketPaste) awaitingPromptRedraw=false; // Redisplay inside an active ZLE widget.
+            }
             damage(0, height-1);
             if (a == 3) { clearHistory(); break; }
             for (int i = 0; i < height; ++i) {
@@ -745,6 +765,7 @@ void Screen::finishOSC() {
         }
         if (take(';') != commandExitToken) return;
         if (event=="yaaterm-begin") {
+            awaitingPromptRedraw=false;
             if (!alternate && commandBegan) commandBegan(data);
             return;
         }

@@ -97,6 +97,10 @@ public:
     uint64_t historyGeneration = 0;
     // Last visible glyph of the most recent explainable command, in main-buffer coordinates.
     TextPoint commandOutputEnd{-1,0};
+    void expectPromptRedraw();
+    int64_t promptStartRow() const {
+        return commandOutputEnd.row>=0 ? commandOutputEnd.row+rowsToPrompt : promptStart;
+    }
     const Row &row(int y, int64_t offset = 0) const;
     int x() const { return active().cursor.x; }
     int y() const { return active().cursor.y; }
@@ -153,6 +157,9 @@ private:
     void put(char32_t ch);
     void byte(uint8_t c);
     void control(char c);
+    int64_t promptStart=0, rowsToPrompt=0;
+    bool awaitingPromptRedraw=false;
+    void recordPromptStart();
     std::string agentCommand;
     bool reportedTurn = false;
     void finishAgentTurn(bool failed, std::string_view detail);

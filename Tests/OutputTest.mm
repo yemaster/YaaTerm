@@ -650,6 +650,41 @@ static void testTerminalOutput(NSString *directory) {
         for (int y=(int)ceil(streamedTitle); y<(int)floor(streamedPrompt-spacingRow); ++y)
             assert(!memcmp(live.bitmapData+y*live.bytesPerRow,done.bitmapData+y*done.bytesPerRow,live.bytesPerRow));
     }
+    // A theme may print a blank row after the command-end hook but before ZLE paints PS1.
+    send(@"_spacing_pre() { print; }; precmd_functions+=(_spacing_pre); clear\rprint -r -- theme-{output,end}; false\r");
+    until(^BOOL{ return pane.hasFailedCommand && textOnGrid(@"theme-output theme-end") &&
+        rowOnGrid(@"worktree",true)==rowOnGrid(@"theme-output theme-end")+2; });
+    CGFloat themeLine=[[pane valueForKey:@"lh"] doubleValue];
+    auto editorY=[&] { return [pane topOfRow:rowOnGrid(@"worktree",true)]; };
+    CGFloat initialTitle=editorY();
+    auto renderedHeading=[&] {
+        NSRect rect=NSMakeRect(16,initialTitle,8*cw,themeLine);
+        NSBitmapImageRep *rep=[pane bitmapImageRepForCachingDisplayInRect:rect];
+        [pane cacheDisplayInRect:rect toBitmapImageRep:rep];
+        NSMutableData *pixels=[NSMutableData data];
+        for (NSInteger y=0; y<rep.pixelsHigh; ++y)
+            [pixels appendBytes:rep.bitmapData+y*rep.bytesPerRow length:rep.pixelsWide*rep.bitsPerPixel/8];
+        return pixels;
+    };
+    explain();
+    assert(NSMinY(preview().frame)==initialTitle && editorY()==initialTitle+2*themeLine);
+    NSData *loadingHeading=renderedHeading();
+    diagnosisProgress(@"{\"text\":\"第一段");
+    assert(NSMinY(preview().frame)==initialTitle && editorY()==initialTitle+2*themeLine);
+    diagnosisProgress(@"{\"text\":\"第一段\\n第二段");
+    assert(NSMinY(preview().frame)==initialTitle && editorY()==initialTitle+3*themeLine);
+    NSData *partialHeading=renderedHeading();
+    respond(@"第一段\n第二段",nil);
+    until(^BOOL{ return !preview() && textOnGrid(@"第二段"); });
+    assert([pane topOfRow:rowOnGrid(@"命令解释",true)]==initialTitle && editorY()==initialTitle+3*themeLine);
+    NSData *finalHeading=renderedHeading();
+    assert([loadingHeading isEqual:finalHeading] && [partialHeading isEqual:finalHeading]);
+    // Invoking the shortcut again uses the editor below the already committed result.
+    CGFloat nextTitle=editorY();
+    explain();
+    assert(NSMinY(preview().frame)==nextTitle && editorY()==nextTitle+2*themeLine);
+    [pane explainFailure:nil]; respond(@"CANCELED",nil);
+    send(@"precmd_functions=(${precmd_functions:#_spacing_pre})\r");
     window.testScale=0; [pane viewDidChangeBackingProperties];
     [pane setFrameSize:fullSize];
     send(@"print -u2 -- scroll-anchor-{failed,here}; false\r");

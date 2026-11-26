@@ -166,8 +166,6 @@ static NSString *const explanationTitles[]={@"命令解释",@"分析中",@"显�
     NSString *_explanation, *_suggestion;
     ExplanationLabel *_explanationLabel;
     NSProgressIndicator *_explanationProgress;
-    int64_t _promptStart;
-    int _rowsToPrompt;
     int _previewRow;
     CGFloat _previewGap, _previewShift;
     BOOL _showFailureChip;
@@ -799,7 +797,6 @@ struct PaintedLine {
     if (awaiting) _agentResult=record; // Deliver after the same zsh prompt is ready for the next step.
     if (explainable) {
         _lastCommand=record;
-        _promptStart=_screen->historySize()+_screen->y();
         // A silent command is anchored to its echo. The start may have scrolled
         // away with history disabled, or moved when the user resized the pane.
         if (anchor.row<0) {
@@ -815,9 +812,9 @@ struct PaintedLine {
             const Row &row=_screen->lineAt(anchor.row);
             if (anchor.column>0 && !row[anchor.column].width) --anchor.column;
             if (failed) _failureGlyph=row[anchor.column];
-            _rowsToPrompt=(int)(_promptStart-anchor.row);
         }
         _screen->commandOutputEnd=anchor;
+        _screen->expectPromptRedraw();
         if (failed) { _showFailureChip=YES; [self setFixState:ExplainCommand]; }
     }
 }
@@ -1060,9 +1057,7 @@ struct PaintedLine {
         if (_explanationProgress) [self updateProgressAnimation:nil];
     }
     if (hidden) { _previewGap=_previewShift=0; return; }
-    int64_t start=_promptStart-_screen->historySize();
-    if (_screen->commandOutputEnd.row>=0)
-        start=_screen->commandOutputEnd.row+_rowsToPrompt-_screen->historySize();
+    int64_t start=_screen->promptStartRow()-_screen->historySize();
     _previewRow=(int)std::clamp<int64_t>(start,0,_screen->y());
     // ZLE leaves one blank row between the explanation and the next prompt.
     _previewGap=NSHeight(_explanationLabel.frame)+_lh;
@@ -1124,6 +1119,7 @@ struct PaintedLine {
             [pane removeExplanationPreview]; pane->_explanation=nil;
             if (pane->_suggestion.length) [pane setFixState:CopySuggestion];
             else [pane finishExplanation];
+            pane->_screen->expectPromptRedraw();
         }];
     if (!sent) [self setFixState:ShowExplanationAgain];
 }
