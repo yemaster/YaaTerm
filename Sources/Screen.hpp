@@ -95,8 +95,8 @@ public:
     bool archiveFailed() const { return archive && archive->failed(); }
     const Row &lineAt(int64_t index) const;
     uint64_t historyGeneration = 0;
-    // Last visible glyph of the current failed command, in main-buffer coordinates.
-    TextPoint failureCell{-1,0};
+    // Last visible glyph of the most recent explainable command, in main-buffer coordinates.
+    TextPoint commandOutputEnd{-1,0};
     const Row &row(int y, int64_t offset = 0) const;
     int x() const { return active().cursor.x; }
     int y() const { return active().cursor.y; }

@@ -80,24 +80,60 @@ static NSString *cellText(const Row &row, int start, int end, bool trim) {
 }
 @end
 
-// Keep the backing surface within the pane even for thousands of short lines.
-@interface ExplanationLabel : NSTextField
-@property CGFloat contentHeight;
+@interface TerminalView () <NSTextFieldDelegate>
+- (void)drawGlyphs:(const Row &)row count:(int)count at:(NSPoint)point context:(CGContextRef)ctx
+             found:(NSRange)found selected:(NSRange)selected selectedInk:(NSColor *)selectedInk;
 @end
-@implementation ExplanationLabel
+
+// Lay out the pending transcript with the same cell widths, tab stops and wrapping
+// as the PTY. Keep only visible rows and feed the suffix as new text arrives.
+@interface ExplanationLabel : NSTextField
+@property (readonly) const Screen &grid;
+@property CGFloat rowHeight;
+- (void)updateBody:(NSString *)body columns:(int)columns maxRows:(int)limit;
+@end
+@implementation ExplanationLabel {
+    std::unique_ptr<Screen> _grid;
+    int _limit;
+}
+- (const Screen &)grid { return *_grid; }
+- (void)updateBody:(NSString *)body columns:(int)columns maxRows:(int)limit {
+    NSString *prefix=@"命令解释  ";
+    NSString *line=[prefix stringByAppendingString:body ?: @""];
+    NSString *previous=self.stringValue;
+    BOOL append=_grid && _grid->cols==columns && limit==_limit && [line hasPrefix:previous];
+    if (append && line.length==previous.length) return;
+    _limit=limit;
+    int capacity=append ? _grid->height : std::min(2,limit);
+    for (;;) {
+        if (!append) {
+            _grid=std::make_unique<Screen>(columns,capacity);
+            _grid->setHistoryLimit(0);
+            _grid->feed("\033[1;34m命令解释\033[0m  ");
+        }
+        NSString *suffix=[line substringFromIndex:append ? previous.length : prefix.length];
+        _grid->feed([suffix stringByReplacingOccurrencesOfString:@"\n" withString:@"\r\n"].UTF8String);
+        if (_grid->y()+1<capacity || capacity==limit) break;
+        capacity=std::min(limit,2*capacity); append=NO;
+    }
+    self.stringValue=line;
+}
 - (void)drawRect:(NSRect)dirty {
-    if (_contentHeight<=NSHeight(self.bounds)) { [super drawRect:dirty]; return; }
-    NSRectClip(self.bounds);
-    NSRect text=NSInsetRect(self.bounds,2,0);
-    text.origin.y+=NSHeight(text)-_contentHeight; text.size.height=_contentHeight;
-    [self.attributedStringValue drawWithRect:text options:NSStringDrawingUsesLineFragmentOrigin context:nil];
+    if (!_grid) return;
+    TerminalView *pane=(TerminalView *)self.superview;
+    int first=MAX(0,(int)floor(NSMinY(dirty)/_rowHeight));
+    int end=MIN(_grid->y()+1,(int)ceil(NSMaxY(dirty)/_rowHeight));
+    CGContextRef ctx=NSGraphicsContext.currentContext.CGContext;
+    for (int y=first; y<end; ++y) {
+        const Row &row=_grid->row(y);
+        [pane drawGlyphs:row count:row.written at:NSMakePoint(0,y*_rowHeight) context:ctx
+                   found:NSMakeRange(0,0) selected:NSMakeRange(0,0) selectedInk:nil];
+    }
 }
 @end
 
 enum FixState { ExplainCommand, AnalyzingError, SendingExplanation, ShowExplanationAgain, ConfigureDiagnosis, RetryDiagnosis, CopySuggestion };
 static NSString *const explanationTitles[]={@"命令解释",@"分析中",@"显示中",@"重新显示",@"配置 AI 服务",@"重试分析",@"复制建议"};
-@interface TerminalView () <NSTextFieldDelegate>
-@end
 
 @implementation TerminalView {
     std::unique_ptr<Screen> _screen;
@@ -131,6 +167,7 @@ static NSString *const explanationTitles[]={@"命令解释",@"分析中",@"显�
     ExplanationLabel *_explanationLabel;
     NSProgressIndicator *_explanationProgress;
     int64_t _promptStart;
+    int _rowsToPrompt;
     int _previewRow;
     CGFloat _previewGap, _previewShift;
     BOOL _showFailureChip;
@@ -747,7 +784,7 @@ struct PaintedLine {
             int last=index==end ? std::min(_screen->x(),(int)row.size()) : std::min<int>(row.written,row.size());
             int first=_commandGeneration==_screen->historyGeneration && index==_commandRow && !outputStamp ? std::min(last,_commandColumn) : 0;
             last=textEnd(row,first,last);
-            if (failed && anchor.row<0 && last>first) anchor={index,last-1};
+            if (explainable && anchor.row<0 && last>first) anchor={index,last-1};
             NSString *text=cellText(row,first,last,false);
             if (row.wrapAt==0 && rows.count) text=[text stringByAppendingString:@"\n"];
             if (text.length) { [rows addObject:text]; used+=text.length; }
@@ -763,9 +800,7 @@ struct PaintedLine {
     if (explainable) {
         _lastCommand=record;
         _promptStart=_screen->historySize()+_screen->y();
-    }
-    if (failed) {
-        // A silent failure belongs to the echoed command. The start may have scrolled
+        // A silent command is anchored to its echo. The start may have scrolled
         // away with history disabled, or moved when the user resized the pane.
         if (anchor.row<0) {
             int64_t cursor=_screen->historySize()+_screen->y();
@@ -779,10 +814,11 @@ struct PaintedLine {
         if (anchor.row>=0) {
             const Row &row=_screen->lineAt(anchor.row);
             if (anchor.column>0 && !row[anchor.column].width) --anchor.column;
-            _failureGlyph=row[anchor.column];
+            if (failed) _failureGlyph=row[anchor.column];
+            _rowsToPrompt=(int)(_promptStart-anchor.row);
         }
-        _screen->failureCell=anchor; _showFailureChip=YES;
-        [self setFixState:ExplainCommand];
+        _screen->commandOutputEnd=anchor;
+        if (failed) { _showFailureChip=YES; [self setFixState:ExplainCommand]; }
     }
 }
 - (void)setFixState:(FixState)state {
@@ -840,7 +876,7 @@ struct PaintedLine {
                 col=std::max(textEnd(row,0,row.written),_screen->x()+1);
             }
         } else {
-            y=[self displayRowForCell:_screen->failureCell localColumn:&col];
+            y=[self displayRowForCell:_screen->commandOutputEnd localColumn:&col];
             if (y>=0) {
                 const Row &row=[self displayRow:y];
                 if (col>=(int)row.size() || row[col].ch!=_failureGlyph.ch ||
@@ -1025,40 +1061,26 @@ struct PaintedLine {
     }
     if (hidden) { _previewGap=_previewShift=0; return; }
     int64_t start=_promptStart-_screen->historySize();
-    if (_showFailureChip && _screen->failureCell.row>=0)
-        start=_screen->failureCell.row+1-_screen->historySize();
+    if (_screen->commandOutputEnd.row>=0)
+        start=_screen->commandOutputEnd.row+_rowsToPrompt-_screen->historySize();
     _previewRow=(int)std::clamp<int64_t>(start,0,_screen->y());
-    NSSize size=_explanationLabel.frame.size;
-    _previewGap=ceil(size.height/_lh)*_lh+_lh;
+    // ZLE leaves one blank row between the explanation and the next prompt.
+    _previewGap=NSHeight(_explanationLabel.frame)+_lh;
     _previewShift=MAX(0,(_screen->y()+1-_screen->height)*_lh+_previewGap);
-    NSPoint origin=NSMakePoint(insetX-2,[self gridTopOfRow:_previewRow]-_previewShift);
+    NSPoint origin=NSMakePoint(insetX,[self gridTopOfRow:_previewRow]-_previewShift);
     if (!NSEqualPoints(origin,_explanationLabel.frame.origin)) [_explanationLabel setFrameOrigin:origin];
 }
 - (void)refreshExplanation {
     if (!_explanationLabel) return;
     CGFloat oldGap=_previewGap, oldShift=_previewShift;
-    NSString *title=@"命令解释";
-    NSString *line=[NSString stringWithFormat:@"%@  %@",title,_explanation ?: @""];
-    NSMutableParagraphStyle *style=[[NSMutableParagraphStyle alloc] init];
-    style.minimumLineHeight=style.maximumLineHeight=_lh; style.lineBreakMode=NSLineBreakByCharWrapping;
-    NSMutableAttributedString *rich=[[NSMutableAttributedString alloc] initWithString:line attributes:@{
-        NSFontAttributeName:_regular, NSForegroundColorAttributeName:foreground(), NSParagraphStyleAttributeName:style}];
-    NSRange header=NSMakeRange(0,title.length);
-    NSDictionary *face=[self attributesForFace:1 underlined:NO];
-    [rich addAttributes:face range:header];
-    // Each CJK title glyph occupies two cells in the committed shell transcript.
-    CGFloat tracking=2*_cw-[title sizeWithAttributes:face].width/title.length;
-    [rich addAttribute:NSKernAttributeName value:@(tracking) range:header];
-    [rich addAttribute:NSForegroundColorAttributeName value:TerminalIndexedColor(PreferredColorScheme(),4) range:header];
-    _explanationLabel.attributedStringValue=rich;
-    CGFloat width=MAX(1,NSWidth(self.bounds)-2*insetX+4);
-    CGFloat height=[_explanationLabel.cell cellSizeForBounds:NSMakeRect(0,0,width,CGFLOAT_MAX)].height;
-    CGFloat visible=MAX(1,_screen->height-3)*_lh;
-    _explanationLabel.contentHeight=height;
-    [_explanationLabel setFrameSize:NSMakeSize(width,std::clamp(height,_lh,visible))];
+    [_explanationLabel updateBody:_explanation columns:_screen->cols maxRows:_screen->height];
+    const Screen &grid=_explanationLabel.grid;
+    _explanationLabel.rowHeight=_lh;
+    [_explanationLabel setFrameSize:NSMakeSize(_cw*grid.cols,(grid.y()+1)*_lh)];
+    _explanationLabel.needsDisplay=YES;
     if (_explanationProgress) {
-        CGFloat x=MIN(width-14,ceil(rich.size.width)+2);
-        [_explanationProgress setFrameOrigin:NSMakePoint(MAX(0,x),MAX(0,(_lh-14)/2))];
+        CGFloat x=MIN(grid.x()*_cw,NSWidth(_explanationLabel.frame)-14);
+        [_explanationProgress setFrameOrigin:NSMakePoint(MAX(0,x),grid.y()*_lh+MAX(0,(_lh-14)/2))];
     }
     [self positionExplanation];
     if (oldGap!=_previewGap || oldShift!=_previewShift) self.needsDisplay=YES;
@@ -1066,7 +1088,6 @@ struct PaintedLine {
 - (void)showExplanationPreview:(NSString *)text {
     if (!_explanationLabel) {
         _explanationLabel=[ExplanationLabel wrappingLabelWithString:@""];
-        _explanationLabel.lineBreakMode=NSLineBreakByCharWrapping;
         [self addSubview:_explanationLabel positioned:NSWindowBelow relativeTo:nil];
     }
     NSString *body=text ? TerminalTranscriptText(text) : nil;
@@ -1088,7 +1109,7 @@ struct PaintedLine {
 }
 - (void)finishExplanation {
     [self removeExplanationPreview];
-    _showFailureChip=NO; _screen->failureCell={-1,0};
+    _showFailureChip=NO; _screen->commandOutputEnd={-1,0};
     _fixState=ExplainCommand; _explanation=nil; _suggestion=nil;
     [_fixButton removeFromSuperview]; _fixButton=nil;
 }
@@ -1356,6 +1377,62 @@ struct PaintedLine {
         [NSGraphicsContext restoreGraphicsState];
     }
 }
+- (void)drawGlyphs:(const Row &)row count:(int)count at:(NSPoint)point context:(CGContextRef)ctx
+             found:(NSRange)found selected:(NSRange)selected selectedInk:(NSColor *)selectedInk {
+    CGFloat origin=point.x, py=point.y;
+    for (int x = 0; x < count;) {
+        auto &cell = row[x];
+        if (!cell.width) { ++x; continue; }
+        int next = x + cell.width;
+        // Shape ASCII with identical attributes together. Non-ASCII starts at its grid position.
+        if (cell.width == 1 && cell.ch < 128 && !cell.mark) {
+            while (next < count && row[next].width == 1 && row[next].ch < 128 && !row[next].mark &&
+                   row[next].style == cell.style) ++next;
+        }
+        next = std::min(next,count);
+        int ink = cell.style.fg;
+        NSColor *fg;
+        if (cell.style.flags & Inverse) fg = resolve(cell.style.bg,TerminalBackground());
+        else if (ink < CodeColor) fg = resolve(ink,foreground());
+        else if (!_codeOutput) fg = foreground();
+        else fg = ink == CodeMuted ? CurrentInterfacePalette().secondaryText : TerminalIndexedColor(PreferredColorScheme(),ink-CodeColor);
+        NSColor *original = fg;
+        if (found.length) {
+            if (x < (int)found.location) next = std::min(next,(int)found.location);
+            else if (x < (int)NSMaxRange(found)) {
+                next = std::min(next,(int)NSMaxRange(found));
+                fg = CurrentInterfacePalette().findText;
+            }
+        }
+        if (selected.length && (selectedInk || found.length)) {
+            int start = (int)selected.location, end = (int)NSMaxRange(selected);
+            if (x < start) next = std::min(next,start);
+            else if (x < end) {
+                next = std::min(next,end);
+                fg = selectedInk ?: original;
+            }
+        }
+        NSRect rect = NSMakeRect(origin+x*_cw,py,(next-x)*_cw,_lh);
+        if (cell.ch >= 0x2500 && cell.ch <= 0x259f && !cell.mark) {
+            [fg setFill];
+            if (drawCellGraphic(ctx,cell.ch,rect,std::max(1.,_fontSize/14.))) {
+                if (cell.style.flags & Underline)
+                    fillGridRect(ctx,NSMakeRect(NSMinX(rect),py+_textOffsetY+_regular.ascender-_regular.underlinePosition,
+                                               NSWidth(rect),std::max(1.,_regular.underlineThickness)));
+                x = next;
+                continue;
+            }
+        }
+        NSString *str = cellText(row,x,next,!(cell.style.flags & Underline));
+        if (str.length) {
+            int face = ((cell.style.flags & Bold) ? 1 : 0) | ((cell.style.flags & Italic) ? 2 : 0);
+            NSMutableDictionary *attrs = [self attributesForFace:face underlined:(cell.style.flags & Underline) != 0];
+            if (attrs[NSForegroundColorAttributeName] != fg) attrs[NSForegroundColorAttributeName] = fg;
+            [str drawAtPoint:NSMakePoint(rect.origin.x,py+_textOffsetY) withAttributes:attrs];
+        }
+        x = next;
+    }
+}
 - (void)drawRect:(NSRect)dirty {
     if (_wakeOnActivity) [self wakeForActivity];
     if (_explanationLabel) [self positionExplanation];
@@ -1421,58 +1498,8 @@ struct PaintedLine {
             [selectionColor() setFill];
             fillGridRect(ctx,NSMakeRect(origin+selected.location*_cw,py,selected.length*_cw,_lh));
         }
-        for (int x = 0; x < count;) {
-            auto &cell = row[x];
-            if (!cell.width) { ++x; continue; }
-            int next = x + cell.width;
-            // Shape ASCII with identical attributes together. Non-ASCII starts at its grid position.
-            if (cell.width == 1 && cell.ch < 128 && !cell.mark) {
-                while (next < count && row[next].width == 1 && row[next].ch < 128 && !row[next].mark &&
-                       row[next].style == cell.style) ++next;
-            }
-            next = std::min(next,count);
-            int ink = cell.style.fg;
-            NSColor *fg;
-            if (cell.style.flags & Inverse) fg = resolve(cell.style.bg,TerminalBackground());
-            else if (ink < CodeColor) fg = resolve(ink,foreground());
-            else if (!_codeOutput) fg = foreground();
-            else fg = ink == CodeMuted ? CurrentInterfacePalette().secondaryText : TerminalIndexedColor(PreferredColorScheme(),ink-CodeColor);
-            NSColor *original = fg;
-            if (found.length) {
-                if (x < (int)found.location) next = std::min(next,(int)found.location);
-                else if (x < (int)NSMaxRange(found)) {
-                    next = std::min(next,(int)NSMaxRange(found));
-                    fg = CurrentInterfacePalette().findText;
-                }
-            }
-            if (selected.length && (selectedInk || found.length)) {
-                int start = (int)selected.location, end = (int)NSMaxRange(selected);
-                if (x < start) next = std::min(next,start);
-                else if (x < end) {
-                    next = std::min(next,end);
-                    fg = selectedInk ?: original;
-                }
-            }
-            NSRect rect = NSMakeRect(origin+x*_cw,py,(next-x)*_cw,_lh);
-            if (cell.ch >= 0x2500 && cell.ch <= 0x259f && !cell.mark) {
-                [fg setFill];
-                if (drawCellGraphic(ctx,cell.ch,rect,std::max(1.,_fontSize/14.))) {
-                    if (cell.style.flags & Underline)
-                        fillGridRect(ctx,NSMakeRect(NSMinX(rect),py+_textOffsetY+_regular.ascender-_regular.underlinePosition,
-                                                   NSWidth(rect),std::max(1.,_regular.underlineThickness)));
-                    x = next;
-                    continue;
-                }
-            }
-            NSString *str = cellText(row,x,next,!(cell.style.flags & Underline));
-            if (str.length) {
-                int face = ((cell.style.flags & Bold) ? 1 : 0) | ((cell.style.flags & Italic) ? 2 : 0);
-                NSMutableDictionary *attrs = [self attributesForFace:face underlined:(cell.style.flags & Underline) != 0];
-                if (attrs[NSForegroundColorAttributeName] != fg) attrs[NSForegroundColorAttributeName] = fg;
-                [str drawAtPoint:NSMakePoint(rect.origin.x,py+_textOffsetY) withAttributes:attrs];
-            }
-            x = next;
-        }
+        [self drawGlyphs:row count:count at:NSMakePoint(origin,py) context:ctx
+                   found:found selected:selected selectedInk:selectedInk];
     }
     if (framed) [self drawAgentFramesFrom:first to:end];
     if (_fixButton) [self positionFixButton];

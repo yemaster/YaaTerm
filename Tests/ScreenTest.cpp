@@ -160,9 +160,9 @@ static void checkCodeOutput() {
 static void checkFailureAnchor() {
     Screen screen(16,4);
     screen.feed("bad 路径!\r\n");
-    screen.failureCell={0,8};
+    screen.commandOutputEnd={0,8};
     auto anchored=[&] {
-        TextPoint p=screen.failureCell;
+        TextPoint p=screen.commandOutputEnd;
         return p.row>=0 && p.column<(int)screen.lineAt(p.row).size() && screen.lineAt(p.row)[p.column].ch=='!';
     };
     assert(anchored());
@@ -172,10 +172,10 @@ static void checkFailureAnchor() {
     screen.setHistoryLimit(1);
     for (int i=0;i<40;++i) screen.feed("x\r\n");
     assert(screen.archivedRows()>1 && anchored());
-    screen.clearHistory(); assert(screen.failureCell.row<0);
-    screen.setHistoryLimit(0); screen.feed("\033[2J\033[H\r\n!"); screen.failureCell={1,0};
-    screen.feed("\033[1S"); assert(screen.failureCell.row==0 && anchored());
-    screen.feed("\033[1S"); assert(screen.failureCell.row<0);
+    screen.clearHistory(); assert(screen.commandOutputEnd.row<0);
+    screen.setHistoryLimit(0); screen.feed("\033[2J\033[H\r\n!"); screen.commandOutputEnd={1,0};
+    screen.feed("\033[1S"); assert(screen.commandOutputEnd.row==0 && anchored());
+    screen.feed("\033[1S"); assert(screen.commandOutputEnd.row<0);
 }
 
 int main() {

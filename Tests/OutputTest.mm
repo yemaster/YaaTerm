@@ -26,8 +26,10 @@
 
 @interface HoverTestWindow : NSWindow
 @property NSPoint pointerLocation;
+@property CGFloat testScale;
 @end
 @implementation HoverTestWindow
+- (CGFloat)backingScaleFactor { return _testScale ?: super.backingScaleFactor; }
 - (NSPoint)mouseLocationOutsideOfEventStream { return self.pointerLocation; }
 @end
 
@@ -456,9 +458,10 @@ static void testTerminalOutput(NSString *directory) {
         NSString *json=[[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:result options:0 error:nil] encoding:NSUTF8StringEncoding];
         diagnosisReply(json,nil); diagnosisReply=nil; diagnosisProgress=nil;
     };
-    auto rowOnGrid=[&](NSString *needle) {
+    auto rowOnGrid=[&](NSString *needle, bool last=false) {
         NSInteger rows=(NSHeight(pane.bounds)-24)/[[pane valueForKey:@"lh"] doubleValue];
-        for (int y=0; y<rows; ++y) {
+        for (int i=0; i<rows; ++i) {
+            int y=last ? (int)rows-1-i : i;
             const auto &row=[pane displayRow:y];
             NSMutableString *line=[NSMutableString string];
             for (const auto &cell:row) if (cell.ch && cell.ch<=0xffff) [line appendFormat:@"%C",(unichar)cell.ch];
@@ -572,7 +575,7 @@ static void testTerminalOutput(NSString *directory) {
     diagnosisProgress([NSString stringWithFormat:@"{\"text\":\"%@",manyLines]);
     assert(NSHeight(preview().frame)<NSHeight(pane.bounds) && [preview().stringValue containsString:@"\n请检查"]);
     assert([preview().stringValue hasSuffix:@"STREAM-TAIL"]);
-    assert([[preview() valueForKey:@"contentHeight"] doubleValue]>10*NSHeight(preview().frame));
+    assert(NSHeight(preview().frame)==floor((NSHeight(pane.bounds)-24)/lh)*lh);
     paint(pane,@"diagnosis-long-stream.png");
     void (^oldProgress)(NSString *)=[diagnosisProgress copy];
     diagnosisReply(nil,@"模型服务连接超时。"); diagnosisReply=nil;
@@ -618,6 +621,37 @@ static void testTerminalOutput(NSString *directory) {
     SetTerminalPreference(AppearanceModeKey,AlwaysDark); paint(pane,@"diagnosis-dark.png");
     SetTerminalPreference(AppearanceModeKey,mode); send(@"\r");
     until(^BOOL{ return !pane.hasFailedCommand; });
+    // Match the existing ZLE transcript, including blank output rows and a multiline prompt.
+    for (int sample=0; sample<3; ++sample) {
+        window.testScale=sample==0 ? 1 : 2; [pane viewDidChangeBackingProperties];
+        [pane setFrameSize:NSMakeSize(454,360)];
+        NSString *cmd=sample==2 ? @"repeat 30 print -- earlier; print -r -- spacing-{error,end}; print; false" :
+            [@"print -r -- {1..30}; print -r -- spacing-{error,end}; print; " stringByAppendingString:sample==0 ? @"false" : @"true"];
+        send([NSString stringWithFormat:@"PROMPT=$'worktree\\n❯ '; clear\r%@\r",cmd]);
+        until(^BOOL{ return [[pane valueForKey:@"lastCommand"][@"command"] isEqual:cmd] &&
+            textOnGrid(@"spacing-error spacing-end") && rowOnGrid(@"worktree",true)>rowOnGrid(@"spacing-error spacing-end"); });
+        [pane setFrameSize:NSMakeSize(362,360)];
+        until(^BOOL{ return rowOnGrid(@"worktree",true)==rowOnGrid(@"spacing-error spacing-end")+2; });
+        CGFloat spacingRow=[[pane valueForKey:@"lh"] doubleValue];
+        auto promptY=[&] { return [pane topOfRow:rowOnGrid(@"worktree",true)]; };
+        explain();
+        CGFloat outputY=[pane topOfRow:rowOnGrid(@"spacing-error spacing-end")];
+        assert(NSMinY(preview().frame)==outputY+2*spacingRow && promptY()==NSMinY(preview().frame)+2*spacingRow);
+        NSString *wrapped=@"这些中文字符占两列。请检查文件名是否正确。\n\t再试一次。";
+        NSData *payload=[NSJSONSerialization dataWithJSONObject:@{@"text":wrapped} options:0 error:nil];
+        diagnosisProgress([[NSString alloc] initWithData:payload encoding:NSUTF8StringEncoding]);
+        CGFloat streamedPrompt=promptY(), streamedTitle=NSMinY(preview().frame);
+        NSBitmapImageRep *live=paint(pane,nil);
+        respond(wrapped,nil);
+        until(^BOOL{ return !preview() && textOnGrid(@"再试一次"); });
+        assert(streamedTitle==[pane topOfRow:rowOnGrid(@"命令解释",true)] && streamedPrompt==promptY());
+        assert(rowOnGrid(@"worktree",true)==rowOnGrid(@"再试一次")+2);
+        NSBitmapImageRep *done=paint(pane,nil);
+        for (int y=(int)ceil(streamedTitle); y<(int)floor(streamedPrompt-spacingRow); ++y)
+            assert(!memcmp(live.bitmapData+y*live.bytesPerRow,done.bitmapData+y*done.bytesPerRow,live.bytesPerRow));
+    }
+    window.testScale=0; [pane viewDidChangeBackingProperties];
+    [pane setFrameSize:fullSize];
     send(@"print -u2 -- scroll-anchor-{failed,here}; false\r");
     until(^BOOL{ return pane.hasFailedCommand && textOnGrid(@"scroll-anchor-failed"); });
     for (int i=0;i<34;++i) [pane consume:"\r\nlater output"];

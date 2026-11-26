@@ -87,7 +87,7 @@ void Screen::thaw() {
 }
 void Screen::spillOldest() {
     if (!archive) archive = std::make_unique<HistoryArchive>();
-    if (!archive->append(history.front())) { failureCell.row=-1; ++historyGeneration; }
+    if (!archive->append(history.front())) { commandOutputEnd.row=-1; ++historyGeneration; }
 }
 
 Row Screen::remember(Row &&row) {
@@ -108,7 +108,7 @@ void Screen::setHistoryLimit(size_t limit) {
     if (frozen()) thaw();
     historyLimit = limit;
     if (!limit) {
-        failureCell.row=std::max<int64_t>(-1,failureCell.row-archivedRows()-(int64_t)history.size());
+        commandOutputEnd.row=std::max<int64_t>(-1,commandOutputEnd.row-archivedRows()-(int64_t)history.size());
         history.clear(); hotBytes = 0; archive.reset(); ++historyGeneration; return;
     }
     while (history.size() > limit) {
@@ -120,7 +120,7 @@ void Screen::setHistoryLimit(size_t limit) {
 void Screen::clearHistory() {
     if (frozen()) thaw();
     if (!alternate) {
-        failureCell.row=std::max<int64_t>(-1,failureCell.row-historySize());
+        commandOutputEnd.row=std::max<int64_t>(-1,commandOutputEnd.row-historySize());
         history.clear(); hotBytes = 0; archive.reset(); ++historyGeneration;
     }
 }
@@ -153,7 +153,7 @@ void Screen::resizeBuffer(Buffer &b, int w, int h) {
     int shift = std::max(0, bottom - h + 1);
     if (&b == &main && historyLimit)
         for (int i = 0; i < shift; ++i) remember(std::move(b.rows[i]));
-    if (&b==&main && !historyLimit) failureCell.row=std::max<int64_t>(-1,failureCell.row-shift);
+    if (&b==&main && !historyLimit) commandOutputEnd.row=std::max<int64_t>(-1,commandOutputEnd.row-shift);
     b.rows.erase(b.rows.begin(), b.rows.begin()+shift);
     b.rows.resize(h);
     for (auto &r : b.rows) {
@@ -180,7 +180,7 @@ void Screen::reflowMain(int w, int h) {
     int last = oldHeight-1;
     while (last > b.cursor.y && b.rows[last].used() == 0 && !b.rows[last-1].wrapAt) --last;
     Cursor next = b.cursor, saved = b.saved;
-    const int64_t anchorY=failureCell.row-historySize();
+    const int64_t anchorY=commandOutputEnd.row-historySize();
     TextPoint reflowed{-1,0};
     auto emit = [&](bool soft) {
         out.wrapAt = soft ? filled : 0; out.written = filled;
@@ -209,7 +209,7 @@ void Screen::reflowMain(int w, int h) {
                 }
             };
             map(b.cursor,next); map(b.saved,saved);
-            if (y==anchorY && col==failureCell.column) reflowed={emitted,filled};
+            if (y==anchorY && col==commandOutputEnd.column) reflowed={emitted,filled};
         };
         for (int x=0; x<end;) {
             int width = src[x].width == 2 && x+1<end ? 2 : 1;
@@ -228,8 +228,8 @@ void Screen::reflowMain(int w, int h) {
         c->y = std::clamp(c->y-shift,0,h-1); c->x = std::clamp(c->x,0,w-1);
     }
     if (anchorY>=0) {
-        failureCell=reflowed;
-        if (failureCell.row>=0) failureCell.row=std::max<int64_t>(-1,historySize()-shift+failureCell.row);
+        commandOutputEnd=reflowed;
+        if (commandOutputEnd.row>=0) commandOutputEnd.row=std::max<int64_t>(-1,historySize()-shift+commandOutputEnd.row);
     }
     b.cursor = next; b.saved = saved;
     b.rows.assign(std::make_move_iterator(visible.begin()),std::make_move_iterator(visible.end()));
@@ -257,11 +257,11 @@ void Screen::scroll(int first, int last, bool up, bool save) {
     auto &b = active();
     bool whole = first==0 && last==height-1;
     bool keep=up && save && !alternate && historyLimit && whole;
-    if (!alternate && !keep && failureCell.row>=0) {
-        auto y=failureCell.row-historySize();
+    if (!alternate && !keep && commandOutputEnd.row>=0) {
+        auto y=commandOutputEnd.row-historySize();
         if (y>=first && y<=last) {
-            if (y==(up ? first : last)) failureCell.row=-1;
-            else failureCell.row+=up ? -1 : 1;
+            if (y==(up ? first : last)) commandOutputEnd.row=-1;
+            else commandOutputEnd.row+=up ? -1 : 1;
         }
     }
     Row &edge = b.row(up ? first : last);
