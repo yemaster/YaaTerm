@@ -2073,7 +2073,9 @@ static NSString *selectedFieldText(NSString *value, ListingLayout::Column col, b
             case 103: seq = @"\033[23~"; break; case 111: seq = @"\033[24~"; break;
             case 116: seq = @"\033[5~"; break; case 121: seq = @"\033[6~"; break;
             case 117: seq = @"\033[3~"; break; case 51: seq = @"\177"; break;
-            case 36: case 76: seq = @"\r"; break; case 53: seq = @"\033"; break;
+            case 36: case 76: // Return and keypad Enter. LF is the multiline input used by Ctrl+J.
+                seq = modifiers==NSEventModifierFlagShift ? @"\n" : @"\r"; break;
+            case 53: seq = @"\033"; break;
             case 48: seq = (event.modifierFlags & NSEventModifierFlagShift) ? @"\033[Z" : @"\t"; break;
         }
         if (seq) {

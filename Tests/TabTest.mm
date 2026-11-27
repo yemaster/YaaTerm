@@ -47,8 +47,14 @@ static void checkTerminalKeys() {
     auto check = [&](unsigned short code,NSEventModifierFlags modifiers,NSString *expected) {
         NSEvent *event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:modifiers
             timestamp:0 windowNumber:0 context:nil characters:@"" charactersIgnoringModifiers:@"" isARepeat:NO keyCode:code];
+        view.sent=nil;
         [view keyDown:event]; assert([view.sent isEqual:expected]);
     };
+    for (unsigned short enter : {36,76}) {
+        check(enter,0,@"\r");
+        check(enter,NSEventModifierFlagShift,@"\n");
+    }
+    check(48,NSEventModifierFlagShift,@"\033[Z");
     check(122,0,@"\033OP"); check(111,NSEventModifierFlagShift,@"\033[24;2~");
     check(124,NSEventModifierFlagControl,@"\033[1;5C");
     [view consume:"\033[?1h"]; check(115,0,@"\033OH");
