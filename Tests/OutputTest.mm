@@ -514,8 +514,10 @@ static void testTerminalOutput(NSString *directory) {
     diagnosisProgress(@"{\"text\":\"Literal $(touch INJECTED) \\u001b]2;injected\\u0007\",");
     assert([preview().stringValue isEqual:@"命令解释  Literal $(touch INJECTED) �]2;injected�"] && !spinner());
     respond(@"Literal $(touch INJECTED) \033]2;injected\007",@"touch INJECTED");
-    until(^BOOL{ return [fixButton().title isEqual:@"复制建议"] && textOnGrid(@"建议命令  touch INJECTED"); });
-    assert(![pane.sessionTitle isEqual:@"injected"] && textOnGrid(@"print -r DRAFT-KEPT"));
+    // ZLE's draft redraw can arrive in a later PTY read than the widget acknowledgement.
+    until(^BOOL{ return [fixButton().title isEqual:@"复制建议"] && textOnGrid(@"建议命令  touch INJECTED")
+                     && textOnGrid(@"print -r DRAFT-KEPT"); });
+    assert(![pane.sessionTitle isEqual:@"injected"]);
     send(@"builtin \r"); until(^BOOL{ return !pane.hasFailedCommand && textOnGrid(@"builtin print -r DRAFT-KEPT"); });
     assert(![NSFileManager.defaultManager fileExistsAtPath:[directory stringByAppendingPathComponent:@"INJECTED"]]);
     // A new command invalidates the outstanding explanation, even if its request completes afterwards.
