@@ -29,7 +29,11 @@ const groups = [
         </div>
         <p class="requirements">macOS 13 及以上 · Apple Silicon 与 Intel</p>
       </div>
-      <img class="intro-logo" :src="logo" width="512" height="512" alt="">
+      <div class="intro-mark" aria-hidden="true">
+        <div class="logo-stack">
+          <img class="intro-logo" :src="logo" width="512" height="512" alt="">
+        </div>
+      </div>
     </section>
     <div class="manual-index">
       <section v-for="group in groups" :key="group.title">
